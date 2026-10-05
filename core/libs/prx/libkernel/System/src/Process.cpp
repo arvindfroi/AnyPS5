@@ -180,6 +180,11 @@ int APS5_VABI sceKernelGetCurrentCpu(void) {
             throw std::system_error(GetLastError(), std::system_category(), "Reading processor group size");
         index += count;
     }
+#elif defined(__APPLE__)
+    std::size_t cpu = 0;
+    if (const int error = ::pthread_cpu_number_np(&cpu); error != 0)
+        throw std::system_error(error, std::generic_category(), "Reading current processor");
+    const auto index = static_cast<unsigned>(cpu);
 #else
     const int cpu = ::sched_getcpu();
     if (cpu < 0)
