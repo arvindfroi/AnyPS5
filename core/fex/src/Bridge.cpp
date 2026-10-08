@@ -166,7 +166,7 @@ constexpr std::uint8_t Integers = 2;
 constexpr std::uint8_t Unsupported = 3;
 
 // The libraries' variadic functions by their names before NID patching, and their fixed integer
-// arguments.
+// arguments. tests/check_bridge_tables.py checks this and X87Results against the libraries' sources.
 constexpr VariadicExport VariadicExports[] = {
     {"asprintf_nid_postfix", GuestList, 2},
     {"fprintf_nid_postfix", GuestList, 2},

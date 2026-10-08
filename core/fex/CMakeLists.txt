@@ -26,5 +26,8 @@ if(BUILD_TESTING)
         # Runs the relinked programs, so it needs the patched libraries: build the libs target first.
         add_test(NAME fex_fixtures COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fex_fixtures.py
             $<TARGET_FILE:relinker> $<TARGET_FILE:aps5-fex> ${CMAKE_BINARY_DIR}/core/libs/libs)
+        # The bridge lists the variadic and long double exports by name, since it cannot tell them apart.
+        add_test(NAME fex_bridge_tables COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_bridge_tables.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/Bridge.cpp ${CMAKE_SOURCE_DIR}/core/libs)
     endif()
 endif()
