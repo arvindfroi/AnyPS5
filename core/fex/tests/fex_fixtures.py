@@ -189,8 +189,40 @@ def threading():
     return program(code, ["pthread_create", "pthread_join", "exit"], bytes(16))
 
 
+def extended():
+    """strtold("1.0000000000000000001"), stored from st(0), then exit(42) if it holds the x87 value
+    1 + 2^-63: the long double result reaches the guest's x87 stack."""
+    data = bytearray(0x30)
+    data[0:22] = b"1.0000000000000000001\0"
+
+    def code(got, at):
+        out = bytearray(b"\x48\x83\xec\x08")                                  # sub rsp, 8
+        out += b"\x48\x8d\x3d" + struct.pack("<i", at(0, CODE + len(out) + 7))   # lea rdi, [rip+text]
+        out += b"\x31\xf6"                                                    # xor esi, esi
+        out += b"\xff\x15" + struct.pack("<i", got(0, CODE + len(out) + 6))       # call [rip+strtold]
+        out += b"\xdb\x3d" + struct.pack("<i", at(0x20, CODE + len(out) + 6))     # fstp tword [rip+value]
+        out += b"\x48\x8b\x05" + struct.pack("<i", at(0x20, CODE + len(out) + 7))  # mov rax, [rip+value]
+        out += b"\x48\xb9" + struct.pack("<Q", 0x8000000000000001)             # mov rcx, 0x8000000000000001
+        out += b"\x48\x39\xc8"                                                # cmp rax, rcx
+        failures = [len(out)]
+        out += b"\x75\x00"                                                    # jne fail
+        out += b"\x0f\xb7\x05" + struct.pack("<i", at(0x28, CODE + len(out) + 7))  # movzx eax, word [rip+value+8]
+        out += b"\x3d\xff\x3f\x00\x00"                                        # cmp eax, 0x3fff
+        failures.append(len(out))
+        out += b"\x75\x00"                                                    # jne fail
+        out += b"\xbf\x2a\x00\x00\x00"                                        # mov edi, 42
+        out += b"\xff\x15" + struct.pack("<i", got(1, CODE + len(out) + 6))       # call [rip+exit]
+        for jump in failures:
+            out[jump + 1] = len(out) - (jump + 2)
+        out += b"\xbf\x01\x00\x00\x00"                                        # fail: mov edi, 1
+        out += b"\xff\x15" + struct.pack("<i", got(1, CODE + len(out) + 6))       # call [rip+exit]
+        out += b"\x0f\x0b"                                                    # ud2
+        return out
+    return program(code, ["strtold", "exit"], bytes(data))
+
+
 FIXTURES = {"hello": hello, "floating": floating, "sorting": sorting, "variadic": variadic, "opening": opening,
-            "threading": threading}
+            "threading": threading, "extended": extended}
 
 if __name__ == "__main__":
     open(sys.argv[2], "wb").write(FIXTURES[sys.argv[1]]())

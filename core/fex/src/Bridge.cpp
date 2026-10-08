@@ -89,6 +89,9 @@ constexpr VariadicExport VariadicExports[] = {
     {"swprintf_nid_postfix", Unsupported, 3},
 };
 
+// The libraries' functions that return the guest's long double, as x87 bits in x0 and x1.
+constexpr std::string_view X87Results[] = {"strtold_nid_postfix", "wcstold_nid_postfix"};
+
 // sub rsp, 0xb8; store the argument registers; mov rdi, rsp; syscall; load the result registers;
 // add rsp, 0xb8; ret
 constexpr std::uint8_t Trampoline[] = {
@@ -109,6 +112,7 @@ constexpr std::uint8_t Trampoline[] = {
     0xf3, 0x0f, 0x7f, 0xbc, 0x24, 0xa0, 0x00, 0x00, 0x00,
     0x48, 0x89, 0xe7,
     0x0f, 0x05,
+    // Where the x87 variant, which loads st(0) instead, differs.
     0x48, 0x8b, 0x04, 0x24,
     0x48, 0x8b, 0x54, 0x24, 0x08,
     0xf3, 0x0f, 0x6f, 0x44, 0x24, 0x30,
@@ -117,17 +121,26 @@ constexpr std::uint8_t Trampoline[] = {
     0xc3,
 };
 
+constexpr std::size_t TrampolineCall = 98;
+
+// fld tword [rsp]; add rsp, 0xb8; ret
+constexpr std::uint8_t X87Epilogue[] = {0xdb, 0x2c, 0x24, 0x48, 0x81, 0xc4, 0xb8, 0x00, 0x00, 0x00, 0xc3};
+
 }
 
 Bridge::Bridge(std::filesystem::path libraries) : directory(std::move(libraries)), trace(std::getenv("APS5_FEX_TRACE") != nullptr) {
     void* memory = mmap(nullptr, StubSize(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (memory == MAP_FAILED) throw std::runtime_error("cannot allocate the import stubs");
     stubs = static_cast<std::uint8_t*>(memory);
-    static_assert(TrampolineOffset + sizeof(Trampoline) <= FirstStubOffset);
+    static_assert(Trampoline[TrampolineCall - 2] == 0x0f && Trampoline[TrampolineCall - 1] == 0x05);
+    static_assert(TrampolineOffset + sizeof(Trampoline) <= X87TrampolineOffset);
+    static_assert(X87TrampolineOffset + TrampolineCall + sizeof(X87Epilogue) <= FirstStubOffset);
     std::memset(stubs, 0xcc, FirstStubOffset);
     stubs[0] = 0x0f;
     stubs[1] = 0x3e;
     std::memcpy(stubs + TrampolineOffset, Trampoline, sizeof(Trampoline));
+    std::memcpy(stubs + X87TrampolineOffset, Trampoline, TrampolineCall);
+    std::memcpy(stubs + X87TrampolineOffset + TrampolineCall, X87Epilogue, sizeof(X87Epilogue));
 }
 
 Bridge::~Bridge() {
@@ -151,18 +164,19 @@ void Bridge::Open(const std::string& name) {
     }
 }
 
-std::uint64_t Bridge::AddStub(void* address, const std::string& name, Variadic variadic, std::uint8_t fixed) {
+std::uint64_t Bridge::AddStub(void* address, const std::string& name, Variadic variadic, std::uint8_t fixed, bool x87Result) {
     if (FirstStubOffset + (functions.size() + 1) * StubBytes > StubSize()) throw std::runtime_error("too many imported functions");
     const auto number = static_cast<std::uint32_t>(FirstStub + functions.size());
     std::uint8_t* stub = stubs + FirstStubOffset + functions.size() * StubBytes;
     // mov eax, number; jmp trampoline
-    const auto jump = static_cast<std::int32_t>(TrampolineOffset) - static_cast<std::int32_t>(stub + 10 - stubs);
+    const auto target = static_cast<std::int32_t>(x87Result ? X87TrampolineOffset : TrampolineOffset);
+    const auto jump = target - static_cast<std::int32_t>(stub + 10 - stubs);
     const std::uint8_t code[] = {0xb8, static_cast<std::uint8_t>(number), static_cast<std::uint8_t>(number >> 8), static_cast<std::uint8_t>(number >> 16),
         static_cast<std::uint8_t>(number >> 24), 0xe9, static_cast<std::uint8_t>(jump), static_cast<std::uint8_t>(jump >> 8),
         static_cast<std::uint8_t>(jump >> 16), static_cast<std::uint8_t>(jump >> 24)};
     std::memset(stub, 0xcc, StubBytes);
     std::memcpy(stub, code, sizeof(code));
-    functions.push_back({address, name, variadic, fixed});
+    functions.push_back({address, name, variadic, fixed, x87Result});
     return reinterpret_cast<std::uint64_t>(stub);
 }
 
@@ -193,7 +207,9 @@ std::uint64_t Bridge::Resolve(const std::string& name, bool weak) {
                     if (auto* setter = dlsym(library, "Aps5SetBridgeVaList_nid_no_patch")) setBridgeVaList = reinterpret_cast<void (*)(void*)>(setter);
                 if (setBridgeVaList == nullptr) throw std::runtime_error("libc has no Aps5SetBridgeVaList_nid_no_patch");
             }
-            guest = AddStub(address, name, variadic, fixed);
+            const bool x87Result = info.dli_sname != nullptr && info.dli_saddr == address &&
+                std::find(std::begin(X87Results), std::end(X87Results), info.dli_sname) != std::end(X87Results);
+            guest = AddStub(address, name, variadic, fixed, x87Result);
         }
         resolved.emplace(name, guest);
         return guest;

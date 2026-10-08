@@ -65,15 +65,19 @@ private:
         std::string name;
         Variadic variadic;
         std::uint8_t fixed;
+        // Returns the guest's long double, which goes to st(0).
+        bool x87Result;
     };
 
     static constexpr std::size_t StubBytes = 16;
     static constexpr std::size_t StubCapacity = 0x10000;
     static constexpr std::size_t TrampolineOffset = 0x10;
-    static constexpr std::size_t FirstStubOffset = 0x100;
+    static constexpr std::size_t X87TrampolineOffset = 0x100;
+    static constexpr std::size_t FirstStubOffset = 0x200;
     static constexpr std::uint32_t FirstStub = 0x41500000;
 
-    std::uint64_t AddStub(void* address, const std::string& name, Variadic variadic = Variadic::None, std::uint8_t fixed = 0);
+    std::uint64_t AddStub(void* address, const std::string& name, Variadic variadic = Variadic::None, std::uint8_t fixed = 0,
+                          bool x87Result = false);
 
     std::filesystem::path directory;
     std::vector<void*> handles;
