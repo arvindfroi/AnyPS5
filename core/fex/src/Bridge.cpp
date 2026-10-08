@@ -130,6 +130,12 @@ void GuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw) {
     *fcw = currentCall->state->FCW;
 }
 
+// Where a fiber's entry function returns to, which it must not.
+void FiberEntryReturned() {
+    std::fprintf(stderr, "[aps5-fex] the entry function of a fiber returned\n");
+    std::abort();
+}
+
 // The layout libc's dl_iterate_phdr reports.
 struct ImageInfo {
     std::uintptr_t address;
@@ -271,6 +277,12 @@ void Bridge::Connect() {
     reinterpret_cast<void (*)(void (*)(std::uintptr_t*), void (*)(const std::uintptr_t*))>(setUnwind)(CaptureGuestFrame, ResumeGuestFrame);
     if (void* setControl = HostSymbol("Aps5SetBridgeControl_nid_no_patch"))
         reinterpret_cast<void (*)(void (*)(std::uint32_t*, std::uint16_t*))>(setControl)(GuestControl);
+    if (void* setFiber = HostSymbol("Aps5SetFiberBridge_nid_no_patch")) {
+        using SetFiberBridge = void (*)(void (*)(std::uintptr_t*), void (*)(const std::uintptr_t*), void (*)(std::uint32_t*, std::uint16_t*),
+                                        std::uint64_t);
+        reinterpret_cast<SetFiberBridge>(setFiber)(CaptureGuestFrame, ResumeGuestFrame, GuestControl,
+                                                   AddStub(reinterpret_cast<void*>(&FiberEntryReturned), "fiber entry return"));
+    }
 }
 
 void Bridge::Register(const GuestImage& image, const std::string& name) {

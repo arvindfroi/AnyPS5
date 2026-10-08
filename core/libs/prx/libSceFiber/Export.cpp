@@ -45,6 +45,18 @@ enum class FiberState : std::uint32_t {
     Suspended = 4,
 };
 
+#if defined(__APPLE__) && defined(__aarch64__)
+// Under FEXCore a fiber's context is guest state rather than a host stack: the guest registers of the
+// frame that switched away, as just after its call returns, and where the call that resumes it writes
+// the value it was resumed with.
+struct GuestContext {
+    std::uint64_t rbx, rbp, rsp, r12, r13, r14, r15, rip;
+    std::uint64_t* transfer;
+    std::uint32_t mxcsr;
+    std::uint16_t fcw;
+};
+#endif
+
 struct Fiber {
     std::uint64_t magic;
     std::atomic<FiberState> state;
@@ -56,6 +68,9 @@ struct Fiber {
     void* savedStack;
     char name[FIBER_MAX_NAME_LENGTH + 1];
     bool contextSizeCheck;
+#if defined(__APPLE__) && defined(__aarch64__)
+    GuestContext guest;
+#endif
 };
 static_assert(sizeof(Fiber) <= FIBER_OBJECT_SIZE, "guest reserves 0x100 bytes for SceFiber");
 
@@ -76,6 +91,9 @@ struct ThreadFiberState {
     StackBounds threadBounds{};
     std::uint64_t transfer = 0;
     Fiber* pendingSuspend = nullptr;
+#if defined(__APPLE__) && defined(__aarch64__)
+    GuestContext threadGuest{};
+#endif
 };
 
 static thread_local ThreadFiberState g_thread;
@@ -283,6 +301,11 @@ extern "C" [[noreturn]] void Aps5FiberMain_nid_no_patch(Fiber* fiber) {
 }
 
 static void PrepareInitialStack(Fiber* fiber) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    // A fiber that has not started has no saved guest frame yet.
+    fiber->guest = {};
+    return;
+#endif
     const auto top = reinterpret_cast<std::uintptr_t>(fiber->context + fiber->contextSize) & ~static_cast<std::uintptr_t>(15);
     auto* frame = reinterpret_cast<InitialFrame*>(top - 256);
     std::memset(frame, 0, sizeof(*frame));
@@ -331,6 +354,86 @@ static void Resume(Fiber* target, void** save, std::uint64_t argOnRun) {
     Aps5FiberSwitchStack_nid_no_patch(save, target->savedStack);
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+namespace {
+
+// The runner's view of the guest: the registers of the guest frame whose call reached this library
+// (in DWARF order: rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15, rip), continuing the guest with
+// a full set of them, and the guest's MXCSR and x87 control word.
+void (*bridgeCapture)(std::uintptr_t*) = nullptr;
+void (*bridgeResume)(const std::uintptr_t*) = nullptr;
+void (*bridgeControl)(std::uint32_t*, std::uint16_t*) = nullptr;
+// Where a fiber's entry function returns to: a trap that ends the process.
+std::uint64_t entryReturned = 0;
+
+enum GuestRegister { Rax = 0, Rbx = 3, Rsi = 4, Rdi = 5, Rbp = 6, Rsp = 7, R12 = 12, R13 = 13, R14 = 14, R15 = 15, Rip = 16, GuestRegisters = 17 };
+
+void RequireBridge() {
+    if (bridgeCapture == nullptr || bridgeResume == nullptr || bridgeControl == nullptr) NotImplemented_nid_no_patch("sceFiber without FEXCore");
+}
+
+void Save(GuestContext& context, std::uint64_t* transfer) {
+    RequireBridge();
+    std::uintptr_t registers[GuestRegisters];
+    bridgeCapture(registers);
+    context = {registers[Rbx], registers[Rbp], registers[Rsp], registers[R12], registers[R13], registers[R14], registers[R15], registers[Rip],
+               transfer, 0, 0};
+    bridgeControl(&context.mxcsr, &context.fcw);
+}
+
+// Continues the guest in the frame context saved, whose call returns SCE_OK.
+[[noreturn]] void Continue(const GuestContext& context, std::uint64_t transfer) {
+    std::uint32_t mxcsr = 0;
+    std::uint16_t fcw = 0;
+    bridgeControl(&mxcsr, &fcw);
+    // Setting them in the guest state would not reach FEXCore's rounding mode.
+    if (mxcsr != context.mxcsr || fcw != context.fcw) NotImplemented_nid_no_patch("sceFiber switching to a different MXCSR or x87 control word");
+    if (context.transfer) *context.transfer = transfer;
+    std::uintptr_t registers[GuestRegisters];
+    bridgeCapture(registers);
+    registers[Rax] = SCE_OK;
+    registers[Rbx] = context.rbx;
+    registers[Rbp] = context.rbp;
+    registers[Rsp] = context.rsp;
+    registers[R12] = context.r12;
+    registers[R13] = context.r13;
+    registers[R14] = context.r14;
+    registers[R15] = context.r15;
+    registers[Rip] = context.rip;
+    bridgeResume(registers);
+    std::abort();
+}
+
+// Runs target, which AcquireForResume made Running: from its entry on its own stack, as after a call
+// that returns to the trap, or in the frame it saved.
+[[noreturn]] void Enter(Fiber* target, std::uint64_t argOnRun) {
+    ThreadState().current = target;
+    ThreadState().transfer = argOnRun;
+    if (target->guest.rip != 0) Continue(target->guest, argOnRun);
+    std::uintptr_t registers[GuestRegisters];
+    bridgeCapture(registers);
+    const auto top = reinterpret_cast<std::uintptr_t>(target->context + target->contextSize) & ~static_cast<std::uintptr_t>(15);
+    const auto stack = top - 16;
+    std::memcpy(reinterpret_cast<void*>(stack), &entryReturned, sizeof(entryReturned));
+    registers[Rsp] = stack;
+    registers[Rip] = reinterpret_cast<std::uintptr_t>(target->entry);
+    registers[Rdi] = target->argOnInitialize;
+    registers[Rsi] = argOnRun;
+    bridgeResume(registers);
+    std::abort();
+}
+
+}
+
+extern "C" void Aps5SetFiberBridge_nid_no_patch(void (*capture)(std::uintptr_t*), void (*resume)(const std::uintptr_t*),
+                                                 void (*control)(std::uint32_t*, std::uint16_t*), std::uint64_t returned) {
+    bridgeCapture = capture;
+    bridgeResume = resume;
+    bridgeControl = control;
+    entryReturned = returned;
+}
+#endif
+
 extern "C" {
 
 int32_t APS5_VABI _sceFiberInitializeImpl_nid_postfix(FiberObject* object, const char* name, GuestFiberEntry entry, uint64_t arg_on_initialize, void* addr_context, uint64_t size_context, const void* opt_param, uint32_t build_version) {
@@ -377,6 +480,11 @@ int32_t APS5_VABI sceFiberRun_nid_postfix(FiberObject* object, uint64_t arg_on_r
     if (!fiber) return object ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
     if (ThreadState().current) return SCE_FIBER_ERROR_PERMISSION;
     if (!AcquireForResume(fiber)) return SCE_FIBER_ERROR_STATE;
+#if defined(__APPLE__) && defined(__aarch64__)
+    Save(ThreadState().threadGuest, arg_on_return);
+    ThreadState().threadFramePointer = ThreadState().threadGuest.rbp;
+    Enter(fiber, arg_on_run);
+#endif
     ThreadState().threadFramePointer = reinterpret_cast<std::uint64_t>(static_cast<void**>(__builtin_frame_address(0))[0]);
     ThreadState().threadBounds = CurrentBounds();
     Resume(fiber, &ThreadState().threadStack, arg_on_run);
@@ -402,6 +510,11 @@ int32_t APS5_VABI sceFiberSwitch(FiberObject* object, uint64_t arg_on_run, uint6
         }
         std::fprintf(stderr, "[fiber] switch %s -> %s from %p %p %p %p %p %p\n", self->name, target->name, chain[0], chain[1], chain[2], chain[3], chain[4], chain[5]);
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    Save(self->guest, arg_on_run_out);
+    self->state.store(FiberState::Suspended, std::memory_order_release);
+    Enter(target, arg_on_run);
+#endif
     self->state.store(FiberState::Suspending, std::memory_order_relaxed);
     ThreadState().pendingSuspend = self;
     Resume(target, &self->savedStack, arg_on_run);
@@ -414,6 +527,13 @@ int32_t APS5_VABI sceFiberReturnToThread(uint64_t arg_on_return, uint64_t* arg_o
     auto* self = ThreadState().current;
     if (!self) return SCE_FIBER_ERROR_PERMISSION;
     if (TraceFibers()) std::fprintf(stderr, "[fiber] return %s from %p\n", self->name, __builtin_return_address(0));
+#if defined(__APPLE__) && defined(__aarch64__)
+    Save(self->guest, arg_on_run);
+    self->state.store(FiberState::Suspended, std::memory_order_release);
+    ThreadState().current = nullptr;
+    ThreadState().transfer = arg_on_return;
+    Continue(ThreadState().threadGuest, arg_on_return);
+#endif
     self->state.store(FiberState::Suspending, std::memory_order_relaxed);
     ThreadState().pendingSuspend = self;
     ThreadState().current = nullptr;
