@@ -97,6 +97,9 @@ GuestImage::GuestImage(const std::filesystem::path& path) {
         throw std::runtime_error(path.string() + " has malformed program headers");
     std::vector<ProgramHeader> headers(header.programHeaderCount);
     std::memcpy(headers.data(), bytes.data() + header.programHeaderOffset, headers.size() * sizeof(ProgramHeader));
+    static_assert(sizeof(ProgramHeader) == ProgramHeaderSize);
+    programHeaders.resize(headers.size() * sizeof(ProgramHeader));
+    std::memcpy(programHeaders.data(), headers.data(), programHeaders.size());
 
     std::uint64_t low = UINT64_MAX;
     std::uint64_t high = 0;

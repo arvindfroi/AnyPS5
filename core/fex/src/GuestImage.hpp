@@ -35,6 +35,11 @@ public:
     std::uint64_t Entry() const { return entry; }
     const std::vector<std::string>& Needed() const { return needed; }
     const GuestTlsTemplate& Tls() const { return tls; }
+    // The ELF program headers, for dl_iterate_phdr.
+    const void* ProgramHeaders() const { return programHeaders.data(); }
+    std::size_t ProgramHeaderCount() const { return programHeaders.size() / ProgramHeaderSize; }
+
+    static constexpr std::size_t ProgramHeaderSize = 56;
 
     void Relocate(const Resolver& resolve);
 
@@ -45,6 +50,7 @@ private:
     std::uint64_t entry = 0;
     std::uint64_t dynamic = 0;
     std::vector<std::string> needed;
+    std::vector<unsigned char> programHeaders;
     GuestTlsTemplate tls;
 };
 

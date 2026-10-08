@@ -1,5 +1,10 @@
 #include "Bridge.hpp"
 
+#include "GuestImage.hpp"
+
+#include <FEXCore/Core/CoreState.h>
+#include <FEXCore/Core/X86Enums.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -44,6 +49,60 @@ constexpr std::size_t BlockVectors = 0x30;
 // The guest stack words after the seventh and eighth integer arguments that are passed on, as an
 // AAPCS64 callee expects them for 8-byte arguments.
 constexpr std::uint64_t StackArgumentSlots = 8;
+
+using namespace FEXCore::X86State;
+
+// The bridge calls in progress on this thread, innermost first.
+struct GuestCall {
+    FEXCore::Core::CPUState* state;
+    std::uint64_t block;
+    const GuestCall* outer;
+};
+
+thread_local const GuestCall* currentCall = nullptr;
+
+// x86-64 registers in DWARF order, rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15 and rip, as
+// libc's unwinder keeps them.
+constexpr std::uint32_t DwarfRegisters[16] = {REG_RAX, REG_RDX, REG_RCX, REG_RBX, REG_RSI, REG_RDI, REG_RBP, REG_RSP,
+                                              REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
+
+// The registers of the guest frame whose call reached the library, as just after the call returns:
+// the block holds the argument registers, and the callee-saved ones are untouched in the guest state.
+void CaptureGuestFrame(std::uintptr_t* registers) {
+    if (currentCall == nullptr) {
+        std::fprintf(stderr, "[aps5-fex] a library unwound outside a guest call\n");
+        std::abort();
+    }
+    const auto* saved = reinterpret_cast<const std::uint64_t*>(currentCall->block);
+    for (std::size_t i = 0; i < 16; ++i) registers[i] = currentCall->state->gregs[DwarfRegisters[i]];
+    registers[5] = saved[0];
+    registers[4] = saved[1];
+    registers[1] = saved[2];
+    registers[2] = saved[3];
+    registers[8] = saved[4];
+    registers[9] = saved[5];
+    registers[7] = currentCall->block + BlockSize + 8;
+    registers[16] = *reinterpret_cast<const std::uint64_t*>(currentCall->block + BlockSize);
+}
+
+// Thrown through the library's frames to the bridge call, which continues the guest in this frame.
+struct GuestFrame {
+    std::uintptr_t registers[17];
+};
+
+[[noreturn]] void ResumeGuestFrame(const std::uintptr_t* registers) {
+    GuestFrame frame;
+    std::memcpy(frame.registers, registers, sizeof(frame.registers));
+    throw frame;
+}
+
+// The layout libc's dl_iterate_phdr reports.
+struct ImageInfo {
+    std::uintptr_t address;
+    const char* name;
+    const void* programHeaders;
+    std::uint16_t programHeaderCount;
+};
 
 // A System V x86-64 va_list.
 #pragma pack(push, 1)
@@ -164,6 +223,19 @@ void Bridge::Open(const std::string& name) {
     }
 }
 
+void Bridge::Connect(const GuestImage& image) {
+    void* registerImage = nullptr;
+    void* setUnwind = nullptr;
+    for (void* library : handles) {
+        if (registerImage == nullptr) registerImage = dlsym(library, "Aps5RegisterGuestImage_nid_no_patch");
+        if (setUnwind == nullptr) setUnwind = dlsym(library, "Aps5SetBridgeUnwind_nid_no_patch");
+    }
+    if (registerImage == nullptr || setUnwind == nullptr) throw std::runtime_error("libc has no guest image or unwind hooks");
+    const ImageInfo info {image.Base(), "", image.ProgramHeaders(), static_cast<std::uint16_t>(image.ProgramHeaderCount())};
+    reinterpret_cast<void (*)(const ImageInfo*)>(registerImage)(&info);
+    reinterpret_cast<void (*)(void (*)(std::uintptr_t*), void (*)(const std::uintptr_t*))>(setUnwind)(CaptureGuestFrame, ResumeGuestFrame);
+}
+
 std::uint64_t Bridge::AddStub(void* address, const std::string& name, Variadic variadic, std::uint8_t fixed, bool x87Result) {
     if (FirstStubOffset + (functions.size() + 1) * StubBytes > StubSize()) throw std::runtime_error("too many imported functions");
     const auto number = static_cast<std::uint32_t>(FirstStub + functions.size());
@@ -221,7 +293,10 @@ std::uint64_t Bridge::Resolve(const std::string& name, bool weak) {
     return guest;
 }
 
-std::uint64_t Bridge::Call(std::uint64_t number, std::uint64_t block, std::uint64_t rip) {
+std::uint64_t Bridge::Call(FEXCore::Core::CPUState& state, std::uint64_t number, std::uint64_t block) {
+    // FEXCore leaves the RIP at the syscall, a two-byte instruction.
+    const std::uint64_t rip = state.rip;
+    state.rip = rip + 2;
     if (number < FirstStub || number - FirstStub >= functions.size()) {
         std::fprintf(stderr, "[aps5-fex] guest syscall %llu at %#llx is not supported\n", static_cast<unsigned long long>(number),
                      static_cast<unsigned long long>(rip));
@@ -267,12 +342,21 @@ std::uint64_t Bridge::Call(std::uint64_t number, std::uint64_t block, std::uint6
         std::abort();
     }
     Aps5NativeResult result {};
+    const GuestCall call {&state, block, currentCall};
+    currentCall = &call;
     try {
         Aps5NativeCall(function.address, &arguments, &result);
+    } catch (const GuestFrame& frame) {
+        currentCall = call.outer;
+        if (function.variadic == Variadic::GuestList) setBridgeVaList(nullptr);
+        for (std::size_t i = 0; i < 16; ++i) state.gregs[DwarfRegisters[i]] = frame.registers[i];
+        state.rip = frame.registers[16];
+        return frame.registers[0];
     } catch (const std::exception& error) {
         std::fprintf(stderr, "[aps5-fex] %s: %s\n", function.name.c_str(), error.what());
         std::abort();
     }
+    currentCall = call.outer;
     if (function.variadic == Variadic::GuestList) setBridgeVaList(nullptr);
     registers[0] = result.gpr[0];
     registers[1] = result.gpr[1];

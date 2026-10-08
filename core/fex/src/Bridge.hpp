@@ -16,6 +16,8 @@ struct CPUState;
 
 namespace Aps5Fex {
 
+class GuestImage;
+
 // The HLE libraries, arm64 Mach-O images named *.prx, and the x86-64 stubs through which guest code
 // calls their functions. A stub loads its number into eax and jumps to a common trampoline, which
 // stores the argument registers in a block on the guest stack and executes syscall with the block in
@@ -31,6 +33,9 @@ public:
 
     void Open(const std::string& name);
 
+    // Tells libc about the guest executable, and how to unwind its frames and resume them.
+    void Connect(const GuestImage& image);
+
     // The address guest code uses for an imported name: a library variable itself, or the stub of a
     // library function. A name no library exports gets a stub that stops the program when called;
     // it is listed in Missing(). Returns 0 for such a name when weak.
@@ -45,9 +50,9 @@ public:
     std::size_t StubSize() const { return StubCapacity * StubBytes; }
     bool OwnsStub(std::uint64_t address) const { return address >= StubBase() && address < StubBase() + StubSize(); }
 
-    // Handles the syscall a guest thread made at rip, with rax number and rdi block, and returns its
-    // RAX.
-    std::uint64_t Call(std::uint64_t number, std::uint64_t block, std::uint64_t rip);
+    // Handles the syscall a guest thread made, with rax number and rdi block, and returns its RAX. The
+    // thread continues after the syscall, or in the frame that an unwind installed.
+    std::uint64_t Call(FEXCore::Core::CPUState& state, std::uint64_t number, std::uint64_t block);
 
 private:
     // How a variadic library function takes the arguments after its fixed ones.

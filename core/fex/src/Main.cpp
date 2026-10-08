@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
         bridge.Open("libc.prx");
         for (const auto& name : image.Needed()) bridge.Open(name);
         image.Relocate([&bridge](const std::string& name, bool weak) { return bridge.Resolve(name, weak); });
+        bridge.Connect(image);
         if (!bridge.Missing().empty()) {
             for (const auto& name : bridge.Missing()) std::fprintf(stderr, "[aps5-fex] no library exports %s\n", name.c_str());
         }

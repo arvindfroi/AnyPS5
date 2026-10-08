@@ -5,6 +5,8 @@
 #include <mach-o/getsect.h>
 #include <mach-o/loader.h>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 namespace {
 
@@ -13,9 +15,25 @@ constexpr std::size_t LoadBiasOffset = 0x08;
 constexpr std::size_t HeaderCountOffset = 0x58;
 constexpr std::size_t HeadersOffset = 0x60;
 
+// Guest images that dyld did not load, such as the executable FEXCore runs.
+std::mutex registeredMutex;
+std::vector<dl_phdr_info> registered;
+
+}
+
+extern "C" void Aps5RegisterGuestImage_nid_no_patch(const dl_phdr_info* image) {
+    std::lock_guard lock(registeredMutex);
+    registered.push_back(*image);
 }
 
 extern "C" int dl_iterate_phdr(int (*callback)(dl_phdr_info*, std::size_t, void*), void* data) {
+    std::vector<dl_phdr_info> images;
+    {
+        std::lock_guard lock(registeredMutex);
+        images = registered;
+    }
+    for (auto& image : images)
+        if (const int result = callback(&image, sizeof(image), data); result != 0) return result;
     for (std::uint32_t index = 0; index < _dyld_image_count(); ++index) {
         const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(index));
         if (header == nullptr || header->magic != MH_MAGIC_64 || (header->flags & MH_DYLIB_IN_CACHE) != 0) continue;

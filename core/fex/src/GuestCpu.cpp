@@ -119,7 +119,7 @@ public:
     }
 
     std::uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame* frame, FEXCore::HLE::SyscallArguments* arguments) override {
-        return bridge.Call(arguments->Argument[0], arguments->Argument[1], frame->State.rip);
+        return bridge.Call(frame->State, arguments->Argument[0], arguments->Argument[1]);
     }
 
     FEXCore::HLE::ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState*, std::uint64_t address) override {
@@ -180,15 +180,17 @@ bool IsGuestCode(std::uint64_t address) {
 
 // A thread's thread pointer: the executable's TLS block directly below a control block whose first
 // word points at itself and whose word at 0x28 is the stack guard, as the guest's code expects from
-// FS.
+// FS. The block takes the TLS segment's size rounded up to its alignment, which is where the linker
+// put the executable's variables relative to the thread pointer.
 std::uint8_t* CreateThreadPointer(const GuestImage& image, void** allocation) {
     constexpr std::size_t ControlBlock = 0x100;
     const GuestTlsTemplate& tls = image.Tls();
+    const std::size_t block = (tls.memorySize + tls.alignment - 1) / tls.alignment * tls.alignment;
     const std::size_t alignment = std::max<std::size_t>(tls.alignment, 64);
-    const std::size_t block = (tls.memorySize + alignment - 1) / alignment * alignment;
-    if (posix_memalign(allocation, alignment, block + ControlBlock) != 0) throw std::bad_alloc();
-    std::memset(*allocation, 0, block + ControlBlock);
-    auto* pointer = static_cast<std::uint8_t*>(*allocation) + block;
+    const std::size_t offset = (block + alignment - 1) / alignment * alignment;
+    if (posix_memalign(allocation, alignment, offset + ControlBlock) != 0) throw std::bad_alloc();
+    std::memset(*allocation, 0, offset + ControlBlock);
+    auto* pointer = static_cast<std::uint8_t*>(*allocation) + offset;
     if (tls.fileSize != 0) std::memcpy(pointer - block, reinterpret_cast<const void*>(image.Base() + tls.address), tls.fileSize);
     const auto self = reinterpret_cast<std::uint64_t>(pointer);
     std::memcpy(pointer, &self, sizeof(self));
