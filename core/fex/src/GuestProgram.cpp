@@ -19,6 +19,24 @@ std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
 
+// libkernel's dlopen and dlsym for the guest modules: all of them are loaded at start, as the
+// executable names them all, so opening one finds it.
+const GuestProgram* loadedProgram = nullptr;
+
+void* OpenGuestModule(const char* path) {
+    std::error_code error;
+    const auto canonical = std::filesystem::weakly_canonical(path, error);
+    if (error) return nullptr;
+    for (const auto& image : loadedProgram->Images())
+        if (image->Path() == canonical) return image.get();
+    return nullptr;
+}
+
+void* GuestModuleSymbol(void* image, const char* name) {
+    const auto symbol = static_cast<const GuestImage*>(image)->Export(name);
+    return symbol && !symbol->tls ? reinterpret_cast<void*>(symbol->address) : nullptr;
+}
+
 }
 
 GuestProgram::GuestProgram(const std::filesystem::path& executable, Bridge& bridge) {
@@ -57,6 +75,10 @@ GuestProgram::GuestProgram(const std::filesystem::path& executable, Bridge& brid
         });
     }
     bridge.Connect();
+    if (auto* setLoader = bridge.HostSymbol("Aps5SetGuestLoader_nid_no_patch")) {
+        loadedProgram = this;
+        reinterpret_cast<void (*)(void* (*)(const char*), void* (*)(void*, const char*))>(setLoader)(OpenGuestModule, GuestModuleSymbol);
+    }
     for (std::size_t index = 0; index < images.size(); ++index)
         bridge.Register(*images[index], index == 0 ? std::string() : images[index]->Path().string());
 }
