@@ -2,6 +2,7 @@
 #define CORE_LIBS_PRX_LIBC_INCLUDE_WINDOWSFORMATTING_HPP
 
 #include "SceTypes.hpp"
+#include "X87Extended.hpp"
 #include <cstdio>
 #include <climits>
 #include <cstring>
@@ -31,7 +32,7 @@ public:
                 address = args.overflow_arg_area;
                 args.overflow_arg_area = static_cast<char*>(args.overflow_arg_area) + 8;
             }
-        } else if constexpr (std::is_same_v<T, long double>) {
+        } else if constexpr (std::is_same_v<T, long double> || std::is_same_v<T, X87Extended>) {
             const auto aligned = (reinterpret_cast<std::uintptr_t>(args.overflow_arg_area) + 15) & ~std::uintptr_t(15);
             address = reinterpret_cast<const void*>(aligned);
             args.overflow_arg_area = reinterpret_cast<void*>(aligned + 16);
@@ -203,7 +204,8 @@ inline int FormatWindows(char* buffer, size_t size, const char* format, const vo
                 static_assert(std::numeric_limits<long double>::digits == 64);
                 output.Value(spec + "L" + conversion, args.Next<long double>());
 #else
-                NotImplemented_nid_no_patch("x87 long double formatting");
+                const std::string text = FormatX87(args.Next<X87Extended>(), spec, conversion);
+                output.Append(text.data(), text.size());
 #endif
             } else {
                 if (!length.empty() && length != "l") throw std::invalid_argument("Invalid floating length");

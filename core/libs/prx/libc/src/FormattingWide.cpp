@@ -146,8 +146,14 @@ std::u16string FormatWide(const char16_t* format, VaList* source, bool secure = 
             } else value = args.Next<unsigned long long>();
             AppendNumber(out, spec + "ll" + static_cast<char>(conversion), value);
         } else if (In(conversion, "aAeEfFgG")) {
-            if (length == "L") AppendNumber(out, spec + "L" + static_cast<char>(conversion), args.Next<long double>());
-            else {
+            if (length == "L") {
+#if defined(__x86_64__)
+                AppendNumber(out, spec + "L" + static_cast<char>(conversion), args.Next<long double>());
+#else
+                const std::string text = LibcDetail::FormatX87(args.Next<X87Extended>(), spec, static_cast<char>(conversion));
+                out.append(text.begin(), text.end());
+#endif
+            } else {
                 if (!length.empty() && length != "l") throw std::invalid_argument("Invalid floating length");
                 AppendNumber(out, spec + static_cast<char>(conversion), args.Next<double>());
             }

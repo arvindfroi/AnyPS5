@@ -11,6 +11,7 @@
 #include <string>
 
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/X87Extended.hpp"
 
 namespace {
 
@@ -166,15 +167,12 @@ double APS5_VABI strtod_nid_postfix(const char* str, char** endptr) {
 
 double APS5_VABI atof_nid_postfix(const char* str) { return std::atof(str); }
 float APS5_VABI strtof_nid_postfix(const char* str, char** endptr) { return std::strtof(str, endptr); }
-long double APS5_VABI strtold_nid_postfix(const char* str, char** endptr) {
+GuestLongDouble APS5_VABI strtold_nid_postfix(const char* str, char** endptr) {
 #if defined(__x86_64__)
     static_assert(sizeof(long double) == 16, "Guest long double requires x87 extended precision storage");
     return std::strtold(str, endptr);
 #else
-    (void)str;
-    (void)endptr;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return LibcDetail::ParseX87(str, endptr);
 #endif
 }
 
@@ -434,16 +432,13 @@ float APS5_VABI wcstof_nid_postfix(const char16_t* str, char16_t** endptr) {
     return ParseAsciiPrefix(str, endptr, [](const char* text, char** end) { return std::strtof(text, end); });
 }
 
-long double APS5_VABI wcstold_nid_postfix(const char16_t* str, char16_t** endptr) {
+GuestLongDouble APS5_VABI wcstold_nid_postfix(const char16_t* str, char16_t** endptr) {
 #if defined(__x86_64__)
     static_assert(sizeof(long double) == 16);
     static_assert(std::numeric_limits<long double>::digits == 64);
     return ParseAsciiPrefix(str, endptr, [](const char* text, char** end) { return std::strtold(text, end); });
 #else
-    (void)str;
-    (void)endptr;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return ParseAsciiPrefix(str, endptr, [](const char* text, char** end) { return LibcDetail::ParseX87(text, end); });
 #endif
 }
 

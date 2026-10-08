@@ -1,5 +1,6 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/VarArgsAbi.hpp"
+#include "prx/libc/include/X87Extended.hpp"
 #include <cstring>
 #include <stdexcept>
 #include <cstdio>
@@ -82,12 +83,12 @@ __attribute__((noinline)) static void APS5_VABI RunChecks() {
         Require(std::strcmp(buffer, "-4294967297 4294967297 -5 7 -8 9") == 0);
         snprintf_nid_postfix(buffer, sizeof(buffer), "%s:%*.*f:%d", "test", -8, 2, 1.25, 7);
         Require(std::strcmp(buffer, "test:1.25    :7") == 0);
-        FormatList(buffer, sizeof(buffer), "%d %d %d %d %d %d %d %.3Lf %.1f", 1, 2, 3, 4, 5, 6, 7, 1.125L, 2.5);
+        FormatList(buffer, sizeof(buffer), "%d %d %d %d %d %d %d %.3Lf %.1f", 1, 2, 3, 4, 5, 6, 7, GuestLongDoubleFromDouble(1.125), 2.5);
         Require(std::strcmp(buffer, "1 2 3 4 5 6 7 1.125 2.5") == 0);
     }
     snprintf_nid_postfix(buffer, sizeof(buffer), "%.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f", 1., 2., 3., 4., 5., 6., 7., 8., 9., 10.);
     Require(std::strcmp(buffer, "1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0 10.0") == 0);
-    snprintf_nid_postfix(buffer, sizeof(buffer), "%.3Lf %d %.1f", 1.125L, 7, 2.5);
+    snprintf_nid_postfix(buffer, sizeof(buffer), "%.3Lf %d %.1f", GuestLongDoubleFromDouble(1.125), 7, 2.5);
     Require(std::strcmp(buffer, "1.125 7 2.5") == 0);
     char expected[1024];
     std::snprintf(expected, sizeof(expected), "%#08x %.3e %a %g %p", 42u, 1.25, 1.25, 1.25, static_cast<void*>(buffer));
