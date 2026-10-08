@@ -5,7 +5,7 @@ endif()
 
 # The guest unwinder steps through the runtime's own frames, and on macOS it reads them from DWARF
 # (__eh_frame); ld64 otherwise folds that into compact unwind info and drops it.
-if(APPLE)
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
     add_link_options(LINKER:-no_compact_unwind)
 endif()
 
