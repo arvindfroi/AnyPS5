@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
         }
         const std::uint64_t rsp = CreateProcessStack(std::vector<std::string>(argv + 1, argv + argc));
         GuestCpu cpu(bridge, program);
+        if (const auto start = program.Executable().StartFunction()) cpu.Start(bridge, *start, rsp, program.Initializers());
         const std::uint64_t rax = cpu.Run(program.Executable().Entry(), rsp, program.Initializers());
         std::fprintf(stderr, "[aps5-fex] the guest halted with RAX %#llx\n", static_cast<unsigned long long>(rax));
         return 1;

@@ -46,6 +46,8 @@ public:
     std::uint64_t Start() const { return start; }
     std::size_t Size() const { return size; }
     std::uint64_t Entry() const { return entry; }
+    // The guest's _start, which the relinker's entry stub calls with the process block in rdi.
+    std::optional<std::uint64_t> StartFunction() const;
     const std::vector<std::string>& Needed() const { return needed; }
     const GuestTlsTemplate& Tls() const { return tls; }
     // The ELF program headers, for dl_iterate_phdr.

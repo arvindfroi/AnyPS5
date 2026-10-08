@@ -61,6 +61,18 @@ struct GuestCall {
 
 thread_local const GuestCall* currentCall = nullptr;
 
+// How many of the size bytes from address can be read: all of them, or the ones before an unmapped
+// page.
+std::size_t ReadableBytes(const void* address, std::size_t size) {
+    constexpr std::uintptr_t Page = 0x4000;
+    const auto first = reinterpret_cast<std::uintptr_t>(address);
+    const auto next = (first & ~(Page - 1)) + Page;
+    if (first + size <= next) return size;
+    char resident = 0;
+    if (mincore(reinterpret_cast<void*>(next), 1, &resident) == 0) return size;
+    return next - first;
+}
+
 // x86-64 registers in DWARF order, rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15 and rip, as
 // libc's unwinder keeps them.
 constexpr std::uint32_t DwarfRegisters[16] = {REG_RAX, REG_RDX, REG_RCX, REG_RBX, REG_RSI, REG_RDI, REG_RBP, REG_RSP,
@@ -235,6 +247,12 @@ void Bridge::Open(const std::string& name) {
     }
 }
 
+void* Bridge::HostSymbol(const char* name) const {
+    for (void* library : handles)
+        if (void* symbol = dlsym(library, name)) return symbol;
+    return nullptr;
+}
+
 void Bridge::Connect() {
     void* setUnwind = nullptr;
     for (void* library : handles)
@@ -334,7 +352,12 @@ std::uint64_t Bridge::Call(FEXCore::Core::CPUState& state, std::uint64_t number,
         std::abort();
     }
     auto* registers = reinterpret_cast<std::uint64_t*>(block);
-    const auto* stack = reinterpret_cast<const std::uint64_t*>(block + BlockSize + 8);
+    auto* guestStack = reinterpret_cast<std::uint64_t*>(block + BlockSize + 8);
+    // The stack argument slots are read whether the function has them or not; past the end of a guest
+    // stack the next page may not be mapped, and then the slots that would lie there are zero.
+    std::uint64_t slots[2 + StackArgumentSlots] {};
+    std::memcpy(slots, guestStack, ReadableBytes(guestStack, sizeof(slots)));
+    const std::uint64_t* stack = slots;
     if (trace) {
         std::fprintf(stderr, "[aps5-fex] %s(%#llx, %#llx, %#llx, %#llx, %#llx, %#llx)\n", function.name.c_str(),
                      static_cast<unsigned long long>(registers[0]), static_cast<unsigned long long>(registers[1]),
@@ -350,17 +373,17 @@ std::uint64_t Bridge::Call(FEXCore::Core::CPUState& state, std::uint64_t number,
     std::memcpy(arguments.vector, reinterpret_cast<const void*>(block + BlockVectors), sizeof(arguments.vector));
     // The guest's variadic arguments, for a function that takes them as a guest list: the integer ones
     // after the fixed ones in the block, the vector ones from xmm0, then the caller's stack arguments.
-    VaList list {static_cast<std::uint32_t>(8 * function.fixed), 48, const_cast<std::uint64_t*>(stack), registers};
+    VaList list {static_cast<std::uint32_t>(8 * function.fixed), 48, guestStack, registers};
     // For a function that takes them as integers: the integer registers after the fixed ones, then the
     // caller's stack arguments, each in a stack slot.
-    std::uint64_t slots[6 + StackArgumentSlots];
+    std::uint64_t variadicSlots[6 + StackArgumentSlots];
     switch (function.variadic) {
     case Variadic::None: break;
     case Variadic::GuestList: setBridgeVaList(&list); break;
     case Variadic::Integers:
-        std::memcpy(slots, registers + function.fixed, (6 - function.fixed) * sizeof(std::uint64_t));
-        std::memcpy(slots + 6 - function.fixed, stack, StackArgumentSlots * sizeof(std::uint64_t));
-        arguments.stack = slots;
+        std::memcpy(variadicSlots, registers + function.fixed, (6 - function.fixed) * sizeof(std::uint64_t));
+        std::memcpy(variadicSlots + 6 - function.fixed, stack, StackArgumentSlots * sizeof(std::uint64_t));
+        arguments.stack = variadicSlots;
         arguments.stackSlots = 6 - function.fixed + StackArgumentSlots;
         break;
     case Variadic::Unsupported:

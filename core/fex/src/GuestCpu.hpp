@@ -25,6 +25,11 @@ public:
     // until it halts, and returns its RAX.
     std::uint64_t Run(std::uint64_t rip, std::uint64_t rsp, const std::vector<std::uint64_t>& initializers);
 
+    // Starts the program on a thread of its own through libkernel's Aps5StartGuest, which keeps this
+    // one, the main thread, in its run loop for AppKit: the initializers run there, then start(block,
+    // 0). The guest ends the process with exit().
+    [[noreturn]] void Start(Bridge& bridge, std::uint64_t start, std::uint64_t block, std::vector<std::uint64_t> initializers);
+
 private:
     struct State;
     std::unique_ptr<State> state;

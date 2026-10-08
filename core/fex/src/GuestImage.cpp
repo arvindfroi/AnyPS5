@@ -167,6 +167,16 @@ GuestImage::GuestImage(const std::filesystem::path& path) : path(path) {
     }
 }
 
+std::optional<std::uint64_t> GuestImage::StartFunction() const {
+    // mov rdi, rsp; and rsp, -16; xor rsi, rsi; call _start; ud2
+    constexpr unsigned char Stub[] = {0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0x48, 0x31, 0xf6, 0xe8};
+    const auto* code = reinterpret_cast<const unsigned char*>(entry);
+    if (entry < start || entry + sizeof(Stub) + 6 > start + size || std::memcmp(code, Stub, sizeof(Stub)) != 0) return std::nullopt;
+    std::int32_t displacement;
+    std::memcpy(&displacement, code + sizeof(Stub), sizeof(displacement));
+    return entry + sizeof(Stub) + sizeof(displacement) + displacement;
+}
+
 std::optional<GuestSymbol> GuestImage::Export(const std::string& name) const {
     const auto found = exports.find(name);
     if (found == exports.end()) return std::nullopt;

@@ -33,6 +33,8 @@ public:
     ~Bridge();
 
     void Open(const std::string& name);
+    // A symbol of the libraries that is not a NID, such as a _nid_no_patch one, or nullptr.
+    void* HostSymbol(const char* name) const;
 
     // Tells libc how to unwind guest frames and resume them.
     void Connect();

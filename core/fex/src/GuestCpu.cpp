@@ -215,7 +215,9 @@ public:
             stack = mmap(nullptr, stackSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
             if (stack == MAP_FAILED) throw std::runtime_error("cannot allocate a guest thread stack");
             this->stackSize = stackSize;
-            rsp = reinterpret_cast<std::uint64_t>(stack) + stackSize - 8;
+            // The bridge reads a call's stack argument slots whether the call has them or not, so the
+            // stack starts a page below its top.
+            rsp = reinterpret_cast<std::uint64_t>(stack) + stackSize - Page;
         }
         const std::uint64_t fs = reinterpret_cast<std::uint64_t>(CreateThreadPointer(*guestCode.tls, &tls));
         {
@@ -270,13 +272,25 @@ private:
 };
 
 thread_local ThreadState* currentThread = nullptr;
-// The guest state of a thread that got it when it first called guest code.
-thread_local std::unique_ptr<GuestThread> adoptedThread;
+// How many guest calls the thread is in.
+thread_local unsigned guestDepth = 0;
+
+// The guest state of a thread that got it when it first called guest code. A thread that ends inside
+// guest code, which is how exit() ends the process, leaves it alone.
+struct AdoptedThread {
+    std::unique_ptr<GuestThread> thread;
+
+    ~AdoptedThread() {
+        if (guestDepth != 0) (void)thread.release();
+    }
+};
+
+thread_local AdoptedThread adoptedThread;
 
 ThreadState* CurrentThread() {
     if (currentThread == nullptr) {
-        adoptedThread = std::make_unique<GuestThread>(0, 0, ThreadStackSize);
-        currentThread = adoptedThread->Thread();
+        adoptedThread.thread = std::make_unique<GuestThread>(0, 0, ThreadStackSize);
+        currentThread = adoptedThread.thread->Thread();
     }
     return currentThread;
 }
@@ -321,7 +335,9 @@ void CallGuest(ThreadState* thread, std::uint64_t target, Aps5GuestCallFrame* fr
     state.gregs[REG_R8] = frame->gpr[4];
     state.gregs[REG_R9] = frame->gpr[5];
     std::memcpy(state.xmm.sse.data, frame->vector, sizeof(frame->vector));
+    ++guestDepth;
     thread->CTX->HandleCallback(thread, target);
+    --guestDepth;
     frame->gpr[0] = state.gregs[REG_RAX];
     frame->gpr[1] = state.gregs[REG_RDX];
     std::memcpy(frame->vector, state.xmm.sse.data, 2 * sizeof(frame->vector[0]));
@@ -391,6 +407,38 @@ GuestCpu::GuestCpu(Bridge& bridge, const GuestProgram& program) {
 
 GuestCpu::~GuestCpu() {
     guestCode = {};
+}
+
+namespace {
+
+struct ProgramStart {
+    std::uint64_t start;
+    std::vector<std::uint64_t> initializers;
+};
+
+ProgramStart programStart;
+
+// The native entry Aps5StartGuest calls on the guest's thread, which gets its guest state here.
+void StartProgram(void* block, void*) {
+    ThreadState* thread = CurrentThread();
+    for (const std::uint64_t initializer : programStart.initializers) {
+        Aps5GuestCallFrame frame {};
+        CallGuest(thread, initializer, &frame);
+    }
+    Aps5GuestCallFrame frame {};
+    frame.gpr[0] = reinterpret_cast<std::uint64_t>(block);
+    CallGuest(thread, programStart.start, &frame);
+}
+
+}
+
+void GuestCpu::Start(Bridge& bridge, std::uint64_t start, std::uint64_t block, std::vector<std::uint64_t> initializers) {
+    using StartGuest = void (*)(void (*)(void*, void*), void*);
+    auto* startGuest = reinterpret_cast<StartGuest>(bridge.HostSymbol("Aps5StartGuest_nid_no_patch"));
+    if (startGuest == nullptr) throw std::runtime_error("libkernel has no Aps5StartGuest");
+    programStart = {start, std::move(initializers)};
+    startGuest(StartProgram, reinterpret_cast<void*>(block));
+    std::abort();
 }
 
 std::uint64_t GuestCpu::Run(std::uint64_t rip, std::uint64_t rsp, const std::vector<std::uint64_t>& initializers) {
