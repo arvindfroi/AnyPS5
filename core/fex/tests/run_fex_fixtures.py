@@ -1,4 +1,5 @@
-"""Relink the programs in fex_fixtures.py and run them with aps5-fex.
+"""Relink the programs in fex_fixtures.py, and the C++ programs of the macOS fixtures when the tools
+in fex_toolchain.py are there, and run them with aps5-fex.
 
     python3 run_fex_fixtures.py <relinker> <aps5-fex> <patched prx directory>
 
@@ -11,6 +12,9 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fex_fixtures  # noqa: E402
+import fex_toolchain  # noqa: E402
+
+MACOS = pathlib.Path(__file__).resolve().parents[2] / "relinker" / "relinker" / "tests" / "macos"
 
 EXPECTED = {
     "hello": (42, "hello from x86-64 guest code on arm64\n"),
@@ -41,13 +45,51 @@ def current_umask():
 CHECKS = {"opening": created_with_mode}
 
 
+def compiled_executable(directory, sources, libraries, extra=()):
+    """Builds input.elf from C and C++ sources whose imports come from the named stub libraries, or
+    from libc.prx when libraries is None."""
+    objects = []
+    imported, defined = set(), set()
+    for source in sources:
+        obj = directory / (pathlib.Path(source).stem + ".o")
+        fex_toolchain.compile(MACOS / source, obj, extra=(["-x", "c"] if source.endswith(".c") else []) + list(extra))
+        imported.update(fex_toolchain.symbols(obj, "-u"))
+        defined.update(fex_toolchain.symbols(obj, "-g", "--defined-only"))
+        objects.append(obj)
+    stubs = []
+    for name, names in (libraries or {"libc.prx": sorted(imported - defined)}).items():
+        fex_toolchain.stub_library(names, directory / name, name)
+        stubs.append(directory / name)
+    renamed = []
+    for obj in objects:
+        fex_toolchain.nidify(obj, obj.with_suffix(".nid.o"))
+        renamed.append(obj.with_suffix(".nid.o"))
+    fex_toolchain.link_executable(renamed, stubs, directory / "input.elf")
+    fex_toolchain.make_header_room(directory / "input.elf")
+
+
+# The C++ programs: their builder and the exit status they report.
+COMPILED = {
+    "exception": (lambda d: compiled_executable(d, ["exception.cpp"], None), 43),
+    "c-cleanup": (lambda d: compiled_executable(d, ["c_cleanup.c", "c_cleanup_main.cpp"], None), 47),
+    "threads": (lambda d: compiled_executable(d, ["threads.cpp"], {"libc.prx": ["exit"],
+                "libkernel.prx": ["scePthreadCreate", "scePthreadJoin"]}), 51),
+}
+
+
 def main():
     relinker, runner, libraries = (pathlib.Path(argument).resolve() for argument in sys.argv[1:4])
     failures = []
-    for name, (status, output) in EXPECTED.items():
+    cases = {name: (lambda d, name=name: (d / "input.elf").write_bytes(fex_fixtures.FIXTURES[name]()), status, output)
+             for name, (status, output) in EXPECTED.items()}
+    if fex_toolchain.available():
+        cases.update({name: (build, status, None) for name, (build, status) in COMPILED.items()})
+    else:
+        print("compiled programs skipped: clang, llvm-nm or an LLVM ELF linker is missing")
+    for name, (build, status, output) in cases.items():
         with tempfile.TemporaryDirectory(prefix=f"aps5-fex-{name}-") as directory:
             directory = pathlib.Path(directory)
-            (directory / "input.elf").write_bytes(fex_fixtures.FIXTURES[name]())
+            build(directory)
             relinked = subprocess.run([str(relinker), "--skip-sce-module", "input.elf", "eboot.elf"], cwd=directory,
                                       capture_output=True, text=True, timeout=60)
             if relinked.returncode != 0:
@@ -64,7 +106,7 @@ def main():
         print(failure)
     if failures:
         sys.exit(1)
-    print(f"{len(EXPECTED)} guest programs ran through FEXCore")
+    print(f"{len(cases)} guest programs ran through FEXCore")
 
 
 if __name__ == "__main__":
