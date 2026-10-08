@@ -94,7 +94,9 @@ if(BUILD_TESTING)
     add_library(guest_module_fixture SHARED ${LIBS_INCLUDE_DIR}/tests/GuestModuleFixture.cpp)
     target_include_directories(guest_module_fixture PRIVATE ${LIBS_INCLUDE_DIR})
     add_custom_command(TARGET guest_module_fixture POST_BUILD
+        COMMAND ${APS5_MACHO_UNSIGN} $<TARGET_FILE:guest_module_fixture>
         COMMAND $<TARGET_FILE:nid_patcher> guest_module_fixture $<TARGET_FILE:guest_module_fixture>
+        COMMAND ${APS5_MACHO_SIGN} $<TARGET_FILE:guest_module_fixture>
         VERBATIM)
     add_dependencies(guest_module_fixture nid_patcher)
     set_target_properties(guest_module_fixture PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "${ANYPS5_PRX_RPATH}")
