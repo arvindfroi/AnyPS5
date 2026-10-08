@@ -1,5 +1,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/general/AsmFunction.hpp"
+#include <cstdint>
+#include <cstring>
 
 #if defined(__x86_64__)
 // setjmp/longjmp must capture the guest's own frame, so they are written directly in assembly with
@@ -37,6 +39,60 @@ asm(".text\n"
     "    ldmxcsr 64(%rdi)\n"
     "    fldcw 68(%rdi)\n"
     "    jmp *0(%rdi)\n");
+#elif defined(__APPLE__) && defined(__aarch64__)
+// Under FEXCore the frame to save and resume is the guest's: the runner captures the registers of the
+// guest frame that called, and restoring registers continues the guest there. The saved state is the
+// same as on x86-64.
+extern "C" void LibcCaptureRegisters(std::uintptr_t* registers);
+extern "C" [[noreturn]] void LibcRestoreRegisters(const std::uintptr_t* registers);
+extern "C" void LibcGuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw);
+
+namespace {
+
+struct JumpBuffer {
+    std::uint64_t rip, rbx, rsp, rbp, r12, r13, r14, r15;
+    std::uint32_t mxcsr;
+    std::uint16_t fcw;
+};
+static_assert(offsetof(JumpBuffer, mxcsr) == 64 && offsetof(JumpBuffer, fcw) == 68);
+constexpr std::size_t JumpBufferBytes = 70;
+
+// The captured registers in DWARF order: rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15, rip.
+enum Register { Rax = 0, Rbx = 3, Rbp = 6, Rsp = 7, R12 = 12, R13 = 13, R14 = 14, R15 = 15, Rip = 16, Count = 17 };
+
+}
+
+extern "C" int APS5_VABI setjmp_nid_postfix(void* buffer) {
+    std::uintptr_t registers[Count];
+    LibcCaptureRegisters(registers);
+    JumpBuffer saved {registers[Rip], registers[Rbx], registers[Rsp], registers[Rbp], registers[R12], registers[R13], registers[R14],
+                      registers[R15], 0, 0};
+    LibcGuestControl(&saved.mxcsr, &saved.fcw);
+    std::memcpy(buffer, &saved, JumpBufferBytes);
+    return 0;
+}
+
+extern "C" void APS5_VABI longjmp_nid_postfix(void* buffer, int value) {
+    JumpBuffer saved {};
+    std::memcpy(&saved, buffer, JumpBufferBytes);
+    std::uint32_t mxcsr = 0;
+    std::uint16_t fcw = 0;
+    LibcGuestControl(&mxcsr, &fcw);
+    // Setting them in the guest state would not reach FEXCore's rounding mode.
+    if (mxcsr != saved.mxcsr || fcw != saved.fcw) NotImplemented_nid_no_patch("longjmp to a different MXCSR or x87 control word");
+    std::uintptr_t registers[Count];
+    LibcCaptureRegisters(registers);
+    registers[Rax] = value != 0 ? static_cast<std::uint32_t>(value) : 1u;
+    registers[Rbx] = saved.rbx;
+    registers[Rsp] = saved.rsp;
+    registers[Rbp] = saved.rbp;
+    registers[R12] = saved.r12;
+    registers[R13] = saved.r13;
+    registers[R14] = saved.r14;
+    registers[R15] = saved.r15;
+    registers[Rip] = saved.rip;
+    LibcRestoreRegisters(registers);
+}
 #else
 extern "C" int APS5_VABI setjmp_nid_postfix(void* buffer) {
     (void)buffer;

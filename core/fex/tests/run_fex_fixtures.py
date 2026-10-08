@@ -15,6 +15,8 @@ import fex_fixtures  # noqa: E402
 import fex_toolchain  # noqa: E402
 
 MACOS = pathlib.Path(__file__).resolve().parents[2] / "relinker" / "relinker" / "tests" / "macos"
+# Guest programs that only these tests use.
+HERE = pathlib.Path(__file__).resolve().parent
 
 EXPECTED = {
     "hello": (42, "hello from x86-64 guest code on arm64\n"),
@@ -97,10 +99,12 @@ COMPILED = {
     "c-cleanup": (lambda d: compiled_executable(d, ["c_cleanup.c", "c_cleanup_main.cpp"], None), 47),
     "threads": (lambda d: compiled_executable(d, ["threads.cpp"], {"libc.prx": ["exit"],
                 "libkernel.prx": ["scePthreadCreate", "scePthreadJoin"]}), 51),
+    "jump": (lambda d: compiled_executable(d, [str(HERE / "jump.cpp")],
+             {"libc.prx": ["setjmp", "longjmp", "exit"]}), 43),
     "module": (lambda d: compiled_modules(d, [("greet.cpp", "libgreet.prx", [])], "module_main.cpp",
                {"libc.prx": ["puts", "exit", "memset", "__tls_get_addr"], "libkernel.prx": ["sceKernelGetModuleInfoForUnwind"]}), 143),
     "dynamic-module": (lambda d: compiled_modules(d, [("greet.cpp", "libgreet.prx", [])],
-                       pathlib.Path(__file__).resolve().parent / "dynamic_module.cpp",
+                       HERE / "dynamic_module.cpp",
                        {"libc.prx": ["puts", "exit", "memset", "__tls_get_addr"],
                         "libkernel.prx": ["sceKernelLoadStartModule", "sceKernelDlsym"]}), 43),
     "tls-modules": (lambda d: compiled_modules(d, [("tls_owner.cpp", "libowner.prx", []), ("tls_user.cpp", "libuser.prx", ["libowner.prx"])],

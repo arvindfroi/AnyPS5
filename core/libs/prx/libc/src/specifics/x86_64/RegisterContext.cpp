@@ -104,6 +104,17 @@ asm(
 namespace {
 void (*bridgeCapture)(std::uintptr_t*) = nullptr;
 void (*bridgeRestore)(const std::uintptr_t*) = nullptr;
+void (*bridgeControl)(std::uint32_t*, std::uint16_t*) = nullptr;
+}
+
+extern "C" void Aps5SetBridgeControl_nid_no_patch(void (*control)(std::uint32_t* mxcsr, std::uint16_t* fcw)) {
+    bridgeControl = control;
+}
+
+// The guest's MXCSR and x87 control word, for setjmp and longjmp.
+extern "C" void LibcGuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw) {
+    if (bridgeControl == nullptr) std::abort();
+    bridgeControl(mxcsr, fcw);
 }
 
 extern "C" void Aps5SetBridgeUnwind_nid_no_patch(void (*capture)(std::uintptr_t*), void (*restore)(const std::uintptr_t*)) {

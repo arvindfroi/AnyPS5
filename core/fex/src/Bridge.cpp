@@ -120,6 +120,16 @@ void* TlsGetAddr(const std::uint64_t* index) {
     return reinterpret_cast<void*>(currentCall->state->fs_cached - tlsOffsets[index[0]] + index[1]);
 }
 
+// The guest's MXCSR and x87 control word, for libc's setjmp and longjmp.
+void GuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw) {
+    if (currentCall == nullptr) {
+        std::fprintf(stderr, "[aps5-fex] a library read the guest's control words outside a guest call\n");
+        std::abort();
+    }
+    *mxcsr = currentCall->state->mxcsr;
+    *fcw = currentCall->state->FCW;
+}
+
 // The layout libc's dl_iterate_phdr reports.
 struct ImageInfo {
     std::uintptr_t address;
@@ -259,6 +269,8 @@ void Bridge::Connect() {
         if (setUnwind == nullptr) setUnwind = dlsym(library, "Aps5SetBridgeUnwind_nid_no_patch");
     if (setUnwind == nullptr) throw std::runtime_error("libc has no unwind hooks");
     reinterpret_cast<void (*)(void (*)(std::uintptr_t*), void (*)(const std::uintptr_t*))>(setUnwind)(CaptureGuestFrame, ResumeGuestFrame);
+    if (void* setControl = HostSymbol("Aps5SetBridgeControl_nid_no_patch"))
+        reinterpret_cast<void (*)(void (*)(std::uint32_t*, std::uint16_t*))>(setControl)(GuestControl);
 }
 
 void Bridge::Register(const GuestImage& image, const std::string& name) {
