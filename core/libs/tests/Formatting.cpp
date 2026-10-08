@@ -1,15 +1,9 @@
 #include "SceTypes.hpp"
+#include "prx/libc/include/VarArgsAbi.hpp"
 #include <cstring>
 #include <stdexcept>
 #include <cstdio>
 #include <cstdarg>
-
-// clang only has the explicit System V va_list builtins on targets whose default ABI is not System V.
-#if defined(__clang__) && !defined(_WIN32)
-#define __builtin_sysv_va_list va_list
-#define __builtin_sysv_va_start va_start
-#define __builtin_sysv_va_end va_end
-#endif
 
 extern "C" {
 int APS5_VABI snprintf_nid_postfix(char*, size_t, const char*, ...);
@@ -26,24 +20,22 @@ static void Require(bool condition) {
 }
 
 static int APS5_VABI FormatList(char* buffer, size_t size, const char* format, ...) {
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+    APS5_VA_BEGIN(format);
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const VaList original = list;
     const int result = vsnprintf_nid_postfix(buffer, size, format, &list);
     Require(std::memcmp(&list, &original, sizeof(list)) == 0);
-    __builtin_sysv_va_end(args);
+    APS5_VA_END();
     return result;
 }
 
 static int APS5_VABI PrintList(const char* format, ...) {
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+    APS5_VA_BEGIN(format);
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const int result = vprintf_nid_postfix(format, &list);
-    __builtin_sysv_va_end(args);
+    APS5_VA_END();
     return result;
 }
 
