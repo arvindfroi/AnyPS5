@@ -371,14 +371,27 @@ namespace Aps5Fex {
 
 namespace {
 
+// The handlers that were there before the runner's, for the faults that are not its own.
+struct sigaction previousBus {}, previousSegv {};
+
 // Guest code is never host executable, so a host call to a guest function faults on its first
-// instruction; the call continues in Aps5GuestCallEntry instead.
+// instruction; the call continues in Aps5GuestCallEntry instead. Any other fault goes to the handler
+// that was installed before, or, without one, ends the process as it would have.
 void OnFault(int signal, siginfo_t* info, void* context) {
     auto* machine = static_cast<ucontext_t*>(context)->uc_mcontext;
     const std::uint64_t pc = arm_thread_state64_get_pc(machine->__ss);
     if (IsGuestCode(pc) && reinterpret_cast<std::uint64_t>(info->si_addr) == pc) {
         machine->__ss.__x[16] = pc;
         arm_thread_state64_set_pc_fptr(machine->__ss, &Aps5GuestCallEntry);
+        return;
+    }
+    const struct sigaction& previous = signal == SIGBUS ? previousBus : previousSegv;
+    if ((previous.sa_flags & SA_SIGINFO) != 0 && previous.sa_sigaction != nullptr) {
+        previous.sa_sigaction(signal, info, context);
+        return;
+    }
+    if ((previous.sa_flags & SA_SIGINFO) == 0 && previous.sa_handler != SIG_DFL && previous.sa_handler != SIG_IGN) {
+        previous.sa_handler(signal);
         return;
     }
     std::signal(signal, SIG_DFL);
@@ -389,8 +402,10 @@ void InstallFaultHandler() {
     action.sa_sigaction = OnFault;
     action.sa_flags = SA_SIGINFO;
     sigemptyset(&action.sa_mask);
-    sigaction(SIGBUS, &action, nullptr);
-    sigaction(SIGSEGV, &action, nullptr);
+    sigaction(SIGBUS, &action, &previousBus);
+    sigaction(SIGSEGV, &action, &previousSegv);
+    for (auto* previous : {&previousBus, &previousSegv})
+        if ((previous->sa_flags & SA_SIGINFO) != 0 && previous->sa_sigaction == OnFault) *previous = {};
 }
 
 }
