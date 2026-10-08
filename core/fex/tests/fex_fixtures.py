@@ -146,7 +146,51 @@ def opening():
     return program(code, ["_open", "exit"], b"created.txt\0")
 
 
-FIXTURES = {"hello": hello, "floating": floating, "sorting": sorting, "variadic": variadic, "opening": opening}
+def threading():
+    """pthread_create with a guest entry that checks its thread pointer and returns its argument plus
+    22, then pthread_join and exit with what the thread returned."""
+    def code(got, at):
+        out = bytearray(b"\x48\x83\xec\x08")                                  # sub rsp, 8
+        out += b"\x48\x8d\x3d" + struct.pack("<i", at(0, CODE + len(out) + 7))   # lea rdi, [rip+thread]
+        out += b"\x31\xf6"                                                    # xor esi, esi
+        entry_at = len(out)
+        out += b"\x48\x8d\x15" + bytes(4)                                      # lea rdx, [rip+entry]
+        out += b"\xb9\x14\x00\x00\x00"                                        # mov ecx, 20
+        out += b"\xff\x15" + struct.pack("<i", got(0, CODE + len(out) + 6))       # call [rip+pthread_create]
+        out += b"\x85\xc0"                                                    # test eax, eax
+        failures = [len(out)]
+        out += b"\x75\x00"                                                    # jnz fail
+        out += b"\x48\x8b\x3d" + struct.pack("<i", at(0, CODE + len(out) + 7))   # mov rdi, [rip+thread]
+        out += b"\x48\x8d\x35" + struct.pack("<i", at(8, CODE + len(out) + 7))   # lea rsi, [rip+result]
+        out += b"\xff\x15" + struct.pack("<i", got(1, CODE + len(out) + 6))       # call [rip+pthread_join]
+        out += b"\x85\xc0"                                                    # test eax, eax
+        failures.append(len(out))
+        out += b"\x75\x00"                                                    # jnz fail
+        out += b"\x8b\x3d" + struct.pack("<i", at(8, CODE + len(out) + 6))        # mov edi, [rip+result]
+        out += b"\xff\x15" + struct.pack("<i", got(2, CODE + len(out) + 6))       # call [rip+exit]
+        for jump in failures:
+            out[jump + 1] = len(out) - (jump + 2)
+        out += b"\xbf\x01\x00\x00\x00"                                        # fail: mov edi, 1
+        out += b"\xff\x15" + struct.pack("<i", got(2, CODE + len(out) + 6))       # call [rip+exit]
+        out += b"\x0f\x0b"                                                    # ud2
+        struct.pack_into("<i", out, entry_at + 3, len(out) - (entry_at + 7))
+        out += b"\x64\x48\x8b\x04\x25\x00\x00\x00\x00"                      # entry: mov rax, fs:[0]
+        out += b"\x48\x85\xc0"                                                # test rax, rax
+        bad = [len(out)]
+        out += b"\x74\x00"                                                    # jz bad
+        out += b"\x48\x3b\x00"                                                # cmp rax, [rax]
+        bad.append(len(out))
+        out += b"\x75\x00"                                                    # jne bad
+        out += b"\x48\x8d\x47\x16\xc3"                                        # lea rax, [rdi+22]; ret
+        for jump in bad:
+            out[jump + 1] = len(out) - (jump + 2)
+        out += b"\x31\xc0\xc3"                                                # bad: xor eax, eax; ret
+        return out
+    return program(code, ["pthread_create", "pthread_join", "exit"], bytes(16))
+
+
+FIXTURES = {"hello": hello, "floating": floating, "sorting": sorting, "variadic": variadic, "opening": opening,
+            "threading": threading}
 
 if __name__ == "__main__":
     open(sys.argv[2], "wb").write(FIXTURES[sys.argv[1]]())

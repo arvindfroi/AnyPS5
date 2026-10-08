@@ -18,6 +18,7 @@ EXPECTED = {
     "sorting": (19, ""),
     "variadic": (0, "42 x 2.50 4 5 6\nprinted 7\n"),
     "opening": (0, None),
+    "threading": (42, None),
 }
 
 

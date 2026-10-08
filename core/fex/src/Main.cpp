@@ -23,31 +23,6 @@ using namespace Aps5Fex;
 
 constexpr std::size_t GuestStackSize = std::size_t {8} << 20;
 
-std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
-    return (value + alignment - 1) / alignment * alignment;
-}
-
-// The main thread's thread pointer: the executable's TLS block directly below a control block whose
-// first word points at itself and whose word at 0x28 is the stack guard, as the guest's code expects
-// from FS.
-std::uint64_t CreateThreadPointer(const GuestImage& image) {
-    constexpr std::size_t ControlBlock = 0x100;
-    const GuestTlsTemplate& tls = image.Tls();
-    const std::size_t alignment = std::max<std::size_t>(tls.alignment, 64);
-    const std::size_t block = AlignUp(tls.memorySize, alignment);
-    void* memory = nullptr;
-    if (posix_memalign(&memory, alignment, block + ControlBlock) != 0) throw std::bad_alloc();
-    std::memset(memory, 0, block + ControlBlock);
-    auto* pointer = static_cast<std::uint8_t*>(memory) + block;
-    if (tls.fileSize != 0) std::memcpy(pointer - block, reinterpret_cast<const void*>(image.Base() + tls.address), tls.fileSize);
-    const auto self = reinterpret_cast<std::uint64_t>(pointer);
-    std::memcpy(pointer, &self, sizeof(self));
-    std::uint64_t guard = 0;
-    arc4random_buf(&guard, sizeof(guard));
-    std::memcpy(pointer + 0x28, &guard, sizeof(guard));
-    return self;
-}
-
 // A stack whose top holds argc, the argument pointers, an empty environment and an empty auxiliary
 // vector, which is what the entry stub hands the guest's _start.
 std::uint64_t CreateProcessStack(const std::vector<std::string>& arguments) {
@@ -86,10 +61,9 @@ int main(int argc, char** argv) {
         if (!bridge.Missing().empty()) {
             for (const auto& name : bridge.Missing()) std::fprintf(stderr, "[aps5-fex] no library exports %s\n", name.c_str());
         }
-        const std::uint64_t fs = CreateThreadPointer(image);
         const std::uint64_t rsp = CreateProcessStack(std::vector<std::string>(argv + 1, argv + argc));
         GuestCpu cpu(bridge, image);
-        const std::uint64_t rax = cpu.Run(image.Entry(), rsp, fs);
+        const std::uint64_t rax = cpu.Run(image.Entry(), rsp);
         std::fprintf(stderr, "[aps5-fex] the guest halted with RAX %#llx\n", static_cast<unsigned long long>(rax));
         return 1;
     } catch (const std::exception& error) {
