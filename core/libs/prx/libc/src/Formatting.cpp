@@ -146,6 +146,22 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
 
 }
 
+#if defined(__aarch64__) && defined(__APPLE__)
+namespace {
+thread_local VaList* bridgeVaList = nullptr;
+}
+
+extern "C" void Aps5SetBridgeVaList_nid_no_patch(VaList* list) {
+    bridgeVaList = list;
+}
+
+extern "C" VaList* Aps5TakeBridgeVaList_nid_no_patch(VaList* host) {
+    VaList* list = bridgeVaList;
+    bridgeVaList = nullptr;
+    return list != nullptr ? list : host;
+}
+#endif
+
 extern "C" {
 
 int APS5_VABI swprintf_nid_postfix(wchar_t* output, size_t capacity, const wchar_t* format, ...) {
@@ -218,11 +234,10 @@ int APS5_VABI fprintf_nid_postfix(FileStream* stream, const char* format, ...) {
 
 int APS5_VABI fscanf_nid_postfix(FileStream* stream, const char* format, ...) {
     auto* native = GetNativeStream(stream);
-#ifdef _WIN32
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+#if !APS5_GUEST_VA_LIST_IS_HOST
+    APS5_VA_BEGIN(format);
     const int result = LibcDetail::ScanFileWindows_nid_no_patch(native, format, args);
-    __builtin_sysv_va_end(args);
+    APS5_VA_END();
 #else
     std::va_list args;
     va_start(args, format);
@@ -335,6 +350,16 @@ int APS5_VABI sscanf_s_nid_postfix(const char* buffer, const char* format, ...) 
     __builtin_sysv_va_start(args, format);
     const int result = ScanGuest(buffer, format, true, [&] { return __builtin_va_arg(args, void*); }, [&] { return __builtin_va_arg(args, unsigned int); });
     __builtin_sysv_va_end(args);
+    return result;
+}
+
+#elif !APS5_GUEST_VA_LIST_IS_HOST
+
+int APS5_VABI sscanf_s_nid_postfix(const char* buffer, const char* format, ...) {
+    APS5_VA_BEGIN(format);
+    LibcDetail::FormatArguments arguments(args);
+    const int result = ScanGuest(buffer, format, true, [&] { return arguments.Next<void*>(); }, [&] { return arguments.Next<unsigned int>(); });
+    APS5_VA_END();
     return result;
 }
 

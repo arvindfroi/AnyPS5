@@ -10,6 +10,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <stdexcept>
+#include <string_view>
 #include <sys/mman.h>
 
 // The argument and result registers of a native call, laid out as Trampolines.S reads them.
@@ -35,40 +36,84 @@ namespace Aps5Fex {
 namespace {
 
 // The block the trampoline stores on the guest stack: rdi, rsi, rdx, rcx, r8 and r9, then xmm0 to
-// xmm7 from 0x40. The results replace rdi and rsi (rax, rdx) and xmm0 and xmm1. The caller's stack
-// arguments follow the block and the stub's return address.
-constexpr std::size_t BlockSize = 0xc8;
-constexpr std::size_t BlockVectors = 0x40;
+// xmm7, which is the layout of a System V register save area. The results replace rdi and rsi (rax,
+// rdx) and xmm0 and xmm1. The caller's stack arguments follow the block and the stub's return address.
+constexpr std::size_t BlockSize = 0xb8;
+constexpr std::size_t BlockVectors = 0x30;
 
 // The guest stack words after the seventh and eighth integer arguments that are passed on, as an
 // AAPCS64 callee expects them for 8-byte arguments.
 constexpr std::uint64_t StackArgumentSlots = 8;
 
-// sub rsp, 0xc8; store the argument registers; mov rdi, rsp; syscall; load the result registers;
-// add rsp, 0xc8; ret
+// A System V x86-64 va_list.
+#pragma pack(push, 1)
+struct VaList {
+    std::uint32_t gpOffset;
+    std::uint32_t fpOffset;
+    void* overflowArea;
+    void* registerSaveArea;
+};
+#pragma pack(pop)
+static_assert(sizeof(VaList) == 24);
+
+struct VariadicExport {
+    std::string_view name;
+    std::uint8_t kind;
+    std::uint8_t fixed;
+};
+
+constexpr std::uint8_t GuestList = 1;
+constexpr std::uint8_t Integers = 2;
+constexpr std::uint8_t Unsupported = 3;
+
+// The libraries' variadic functions by their names before NID patching, and their fixed integer
+// arguments.
+constexpr VariadicExport VariadicExports[] = {
+    {"asprintf_nid_postfix", GuestList, 2},
+    {"fprintf_nid_postfix", GuestList, 2},
+    {"fscanf_nid_postfix", GuestList, 2},
+    {"libc_printf_nid_postfix", GuestList, 1},
+    {"printf_nid_postfix", GuestList, 1},
+    {"printf_s_nid_postfix", GuestList, 1},
+    {"snprintf_nid_postfix", GuestList, 3},
+    {"snprintf_s_nid_postfix", GuestList, 3},
+    {"snwprintf_s_nid_postfix", GuestList, 3},
+    {"sprintf_nid_postfix", GuestList, 2},
+    {"sprintf_s_nid_postfix", GuestList, 3},
+    {"sscanf_nid_postfix", GuestList, 2},
+    {"sscanf_s_nid_postfix", GuestList, 2},
+    {"wprintf_nid_postfix", GuestList, 1},
+    {"_open_nid_postfix", Integers, 2},
+    {"fcntl_nid_postfix", Integers, 2},
+    // Formats the host's 32-bit wchar_t from the host's arguments.
+    {"swprintf_nid_postfix", Unsupported, 3},
+};
+
+// sub rsp, 0xb8; store the argument registers; mov rdi, rsp; syscall; load the result registers;
+// add rsp, 0xb8; ret
 constexpr std::uint8_t Trampoline[] = {
-    0x48, 0x81, 0xec, 0xc8, 0x00, 0x00, 0x00,
+    0x48, 0x81, 0xec, 0xb8, 0x00, 0x00, 0x00,
     0x48, 0x89, 0x3c, 0x24,
     0x48, 0x89, 0x74, 0x24, 0x08,
     0x48, 0x89, 0x54, 0x24, 0x10,
     0x48, 0x89, 0x4c, 0x24, 0x18,
     0x4c, 0x89, 0x44, 0x24, 0x20,
     0x4c, 0x89, 0x4c, 0x24, 0x28,
-    0xf3, 0x0f, 0x7f, 0x44, 0x24, 0x40,
-    0xf3, 0x0f, 0x7f, 0x4c, 0x24, 0x50,
-    0xf3, 0x0f, 0x7f, 0x54, 0x24, 0x60,
-    0xf3, 0x0f, 0x7f, 0x5c, 0x24, 0x70,
-    0xf3, 0x0f, 0x7f, 0xa4, 0x24, 0x80, 0x00, 0x00, 0x00,
-    0xf3, 0x0f, 0x7f, 0xac, 0x24, 0x90, 0x00, 0x00, 0x00,
-    0xf3, 0x0f, 0x7f, 0xb4, 0x24, 0xa0, 0x00, 0x00, 0x00,
-    0xf3, 0x0f, 0x7f, 0xbc, 0x24, 0xb0, 0x00, 0x00, 0x00,
+    0xf3, 0x0f, 0x7f, 0x44, 0x24, 0x30,
+    0xf3, 0x0f, 0x7f, 0x4c, 0x24, 0x40,
+    0xf3, 0x0f, 0x7f, 0x54, 0x24, 0x50,
+    0xf3, 0x0f, 0x7f, 0x5c, 0x24, 0x60,
+    0xf3, 0x0f, 0x7f, 0x64, 0x24, 0x70,
+    0xf3, 0x0f, 0x7f, 0xac, 0x24, 0x80, 0x00, 0x00, 0x00,
+    0xf3, 0x0f, 0x7f, 0xb4, 0x24, 0x90, 0x00, 0x00, 0x00,
+    0xf3, 0x0f, 0x7f, 0xbc, 0x24, 0xa0, 0x00, 0x00, 0x00,
     0x48, 0x89, 0xe7,
     0x0f, 0x05,
     0x48, 0x8b, 0x04, 0x24,
     0x48, 0x8b, 0x54, 0x24, 0x08,
-    0xf3, 0x0f, 0x6f, 0x44, 0x24, 0x40,
-    0xf3, 0x0f, 0x6f, 0x4c, 0x24, 0x50,
-    0x48, 0x81, 0xc4, 0xc8, 0x00, 0x00, 0x00,
+    0xf3, 0x0f, 0x6f, 0x44, 0x24, 0x30,
+    0xf3, 0x0f, 0x6f, 0x4c, 0x24, 0x40,
+    0x48, 0x81, 0xc4, 0xb8, 0x00, 0x00, 0x00,
     0xc3,
 };
 
@@ -106,7 +151,7 @@ void Bridge::Open(const std::string& name) {
     }
 }
 
-std::uint64_t Bridge::AddStub(void* address, const std::string& name) {
+std::uint64_t Bridge::AddStub(void* address, const std::string& name, Variadic variadic, std::uint8_t fixed) {
     if (FirstStubOffset + (functions.size() + 1) * StubBytes > StubSize()) throw std::runtime_error("too many imported functions");
     const auto number = static_cast<std::uint32_t>(FirstStub + functions.size());
     std::uint8_t* stub = stubs + FirstStubOffset + functions.size() * StubBytes;
@@ -117,7 +162,7 @@ std::uint64_t Bridge::AddStub(void* address, const std::string& name) {
         static_cast<std::uint8_t>(jump >> 16), static_cast<std::uint8_t>(jump >> 24)};
     std::memset(stub, 0xcc, StubBytes);
     std::memcpy(stub, code, sizeof(code));
-    functions.push_back({address, name});
+    functions.push_back({address, name, variadic, fixed});
     return reinterpret_cast<std::uint64_t>(stub);
 }
 
@@ -133,7 +178,23 @@ std::uint64_t Bridge::Resolve(const std::string& name, bool weak) {
         const auto* text = getsectiondata(image, "__TEXT", "__text", &textSize);
         const auto* byte = static_cast<const std::uint8_t*>(address);
         const bool function = text != nullptr && byte >= text && byte < text + textSize;
-        const std::uint64_t guest = function ? AddStub(address, name) : reinterpret_cast<std::uint64_t>(address);
+        std::uint64_t guest = reinterpret_cast<std::uint64_t>(address);
+        if (function) {
+            Variadic variadic = Variadic::None;
+            std::uint8_t fixed = 0;
+            for (const auto& entry : VariadicExports) {
+                if (info.dli_sname != nullptr && entry.name == info.dli_sname && info.dli_saddr == address) {
+                    variadic = static_cast<Variadic>(entry.kind);
+                    fixed = entry.fixed;
+                }
+            }
+            if (variadic == Variadic::GuestList && setBridgeVaList == nullptr) {
+                for (void* library : handles)
+                    if (auto* setter = dlsym(library, "Aps5SetBridgeVaList_nid_no_patch")) setBridgeVaList = reinterpret_cast<void (*)(void*)>(setter);
+                if (setBridgeVaList == nullptr) throw std::runtime_error("libc has no Aps5SetBridgeVaList_nid_no_patch");
+            }
+            guest = AddStub(address, name, variadic, fixed);
+        }
         resolved.emplace(name, guest);
         return guest;
     }
@@ -170,6 +231,25 @@ std::uint64_t Bridge::Call(std::uint64_t number, std::uint64_t block, std::uint6
         StackArgumentSlots,
     };
     std::memcpy(arguments.vector, reinterpret_cast<const void*>(block + BlockVectors), sizeof(arguments.vector));
+    // The guest's variadic arguments, for a function that takes them as a guest list: the integer ones
+    // after the fixed ones in the block, the vector ones from xmm0, then the caller's stack arguments.
+    VaList list {static_cast<std::uint32_t>(8 * function.fixed), 48, const_cast<std::uint64_t*>(stack), registers};
+    // For a function that takes them as integers: the integer registers after the fixed ones, then the
+    // caller's stack arguments, each in a stack slot.
+    std::uint64_t slots[6 + StackArgumentSlots];
+    switch (function.variadic) {
+    case Variadic::None: break;
+    case Variadic::GuestList: setBridgeVaList(&list); break;
+    case Variadic::Integers:
+        std::memcpy(slots, registers + function.fixed, (6 - function.fixed) * sizeof(std::uint64_t));
+        std::memcpy(slots + 6 - function.fixed, stack, StackArgumentSlots * sizeof(std::uint64_t));
+        arguments.stack = slots;
+        arguments.stackSlots = 6 - function.fixed + StackArgumentSlots;
+        break;
+    case Variadic::Unsupported:
+        std::fprintf(stderr, "[aps5-fex] %s: its variadic arguments cannot be bridged\n", function.name.c_str());
+        std::abort();
+    }
     Aps5NativeResult result {};
     try {
         Aps5NativeCall(function.address, &arguments, &result);
@@ -177,6 +257,7 @@ std::uint64_t Bridge::Call(std::uint64_t number, std::uint64_t block, std::uint6
         std::fprintf(stderr, "[aps5-fex] %s: %s\n", function.name.c_str(), error.what());
         std::abort();
     }
+    if (function.variadic == Variadic::GuestList) setBridgeVaList(nullptr);
     registers[0] = result.gpr[0];
     registers[1] = result.gpr[1];
     std::memcpy(reinterpret_cast<void*>(block + BlockVectors), result.vector, sizeof(result.vector));

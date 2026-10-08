@@ -16,7 +16,27 @@ EXPECTED = {
     "hello": (42, "hello from x86-64 guest code on arm64\n"),
     "floating": (41, ""),
     "sorting": (19, ""),
+    "variadic": (0, "42 x 2.50 4 5 6\nprinted 7\n"),
+    "opening": (0, None),
 }
+
+
+def created_with_mode(directory):
+    path = directory / "created.txt"
+    if not path.exists():
+        return "created.txt was not created"
+    mode = path.stat().st_mode & 0o777
+    expected = 0o640 & ~current_umask()
+    return None if mode == expected else f"created.txt has mode {mode:o}, expected {expected:o}"
+
+
+def current_umask():
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+CHECKS = {"opening": created_with_mode}
 
 
 def main():
@@ -33,9 +53,11 @@ def main():
                 continue
             (directory / "libs").symlink_to(libraries, target_is_directory=True)
             executed = subprocess.run([str(runner), "eboot.elf"], cwd=directory, capture_output=True, text=True, timeout=60)
-            if executed.returncode != status or executed.stdout != output:
+            if executed.returncode != status or (output is not None and executed.stdout != output):
                 failures.append(f"{name}: exit {executed.returncode}, expected {status}; output {executed.stdout!r}, "
                                 f"expected {output!r}; {executed.stderr.strip()[-400:]}")
+            elif name in CHECKS and (problem := CHECKS[name](directory)):
+                failures.append(f"{name}: {problem}")
     for failure in failures:
         print(failure)
     if failures:

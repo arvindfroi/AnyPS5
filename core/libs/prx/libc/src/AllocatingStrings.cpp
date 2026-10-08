@@ -9,7 +9,9 @@
 #include <new>
 #include <string>
 
-#ifdef _WIN32
+#include "prx/libc/include/VarArgsAbi.hpp"
+
+#if !APS5_GUEST_VA_LIST_IS_HOST
 #include "prx/libc/include/WindowsFormatting.hpp"
 #endif
 
@@ -38,16 +40,10 @@ int APS5_VABI asprintf_nid_postfix(char** destination, const char* format, ...) 
     if (!destination) { errno = 22; return -1; }
     *destination = nullptr;
     if (!format) { errno = 22; return -1; }
-#ifdef _WIN32
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
-#else
-    std::va_list args;
-    va_start(args, format);
-#endif
+    APS5_VA_BEGIN(format);
     int result = -1;
     try {
-#ifdef _WIN32
+#if !APS5_GUEST_VA_LIST_IS_HOST
         std::string text;
         const int count = LibcDetail::FormatWindows(nullptr, 0, format, args, &text);
         const char* source = text.c_str();
@@ -68,18 +64,10 @@ int APS5_VABI asprintf_nid_postfix(char** destination, const char* format, ...) 
     } catch (const std::bad_alloc&) {
         errno = 12;
     } catch (...) {
-#ifdef _WIN32
-        __builtin_sysv_va_end(args);
-#else
-        va_end(args);
-#endif
+        APS5_VA_END();
         throw;
     }
-#ifdef _WIN32
-    __builtin_sysv_va_end(args);
-#else
-    va_end(args);
-#endif
+    APS5_VA_END();
     return result;
 }
 

@@ -93,7 +93,60 @@ def sorting():
     return program(code, ["qsort", "exit"], struct.pack("<5i", 5, 3, 9, 1, 7))
 
 
-FIXTURES = {"hello": hello, "floating": floating, "sorting": sorting}
+def variadic():
+    """snprintf with integer, string, double and stack arguments, then puts, then printf."""
+    data = bytearray(0xc0)
+    data[0x00:0x15] = b"%d %s %.2f %d %d %d\0"
+    data[0x40:0x42] = b"x\0"
+    data[0x48:0x50] = struct.pack("<d", 2.5)
+    data[0x50:0x57] = b"%s %d\n\0"
+    data[0x60:0x68] = b"printed\0"
+
+    def code(got, at):
+        out = bytearray(b"\x48\x83\xec\x08")                                  # sub rsp, 8
+        out += b"\x6a\x06\x6a\x05"                                            # push 6; push 5
+        out += b"\x48\x8d\x3d" + struct.pack("<i", at(0x80, CODE + len(out) + 7))  # lea rdi, [rip+buffer]
+        out += b"\xbe\x40\x00\x00\x00"                                        # mov esi, 64
+        out += b"\x48\x8d\x15" + struct.pack("<i", at(0x00, CODE + len(out) + 7))  # lea rdx, [rip+format]
+        out += b"\xb9\x2a\x00\x00\x00"                                        # mov ecx, 42
+        out += b"\x4c\x8d\x05" + struct.pack("<i", at(0x40, CODE + len(out) + 7))  # lea r8, [rip+x]
+        out += b"\x41\xb9\x04\x00\x00\x00"                                    # mov r9d, 4
+        out += b"\xf2\x0f\x10\x05" + struct.pack("<i", at(0x48, CODE + len(out) + 8))  # movsd xmm0, [rip+2.5]
+        out += b"\xb8\x01\x00\x00\x00"                                        # mov eax, 1
+        out += b"\xff\x15" + struct.pack("<i", got(0, CODE + len(out) + 6))       # call [rip+snprintf]
+        out += b"\x48\x83\xc4\x10"                                            # add rsp, 16
+        out += b"\x48\x8d\x3d" + struct.pack("<i", at(0x80, CODE + len(out) + 7))  # lea rdi, [rip+buffer]
+        out += b"\xff\x15" + struct.pack("<i", got(1, CODE + len(out) + 6))       # call [rip+puts]
+        out += b"\x48\x8d\x3d" + struct.pack("<i", at(0x50, CODE + len(out) + 7))  # lea rdi, [rip+format2]
+        out += b"\x48\x8d\x35" + struct.pack("<i", at(0x60, CODE + len(out) + 7))  # lea rsi, [rip+printed]
+        out += b"\xba\x07\x00\x00\x00"                                        # mov edx, 7
+        out += b"\x31\xc0"                                                    # xor eax, eax
+        out += b"\xff\x15" + struct.pack("<i", got(2, CODE + len(out) + 6))       # call [rip+printf]
+        out += b"\x31\xff"                                                    # xor edi, edi
+        out += b"\xff\x15" + struct.pack("<i", got(3, CODE + len(out) + 6))       # call [rip+exit]
+        out += b"\x0f\x0b"                                                    # ud2
+        return out
+    return program(code, ["snprintf", "puts", "printf", "exit"], bytes(data))
+
+
+def opening():
+    """_open("created.txt", O_WRONLY | O_CREAT | O_TRUNC, 0640), then exit(fd < 0): the mode is an
+    integer variadic argument."""
+    def code(got, at):
+        out = bytearray(b"\x48\x83\xec\x08")                                  # sub rsp, 8
+        out += b"\x48\x8d\x3d" + struct.pack("<i", at(0, CODE + len(out) + 7))   # lea rdi, [rip+path]
+        out += b"\xbe\x01\x06\x00\x00"                                        # mov esi, 0x601
+        out += b"\xba\xa0\x01\x00\x00"                                        # mov edx, 0640
+        out += b"\x31\xc0"                                                    # xor eax, eax
+        out += b"\xff\x15" + struct.pack("<i", got(0, CODE + len(out) + 6))       # call [rip+_open]
+        out += b"\x89\xc7\xc1\xef\x1f"                                        # mov edi, eax; shr edi, 31
+        out += b"\xff\x15" + struct.pack("<i", got(1, CODE + len(out) + 6))       # call [rip+exit]
+        out += b"\x0f\x0b"                                                    # ud2
+        return out
+    return program(code, ["_open", "exit"], b"created.txt\0")
+
+
+FIXTURES = {"hello": hello, "floating": floating, "sorting": sorting, "variadic": variadic, "opening": opening}
 
 if __name__ == "__main__":
     open(sys.argv[2], "wb").write(FIXTURES[sys.argv[1]]())
