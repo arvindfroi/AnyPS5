@@ -96,6 +96,18 @@ struct GuestFrame {
     throw frame;
 }
 
+std::vector<std::uint64_t> tlsOffsets;
+
+// __tls_get_addr for the calling guest thread, whose thread pointer is the FS base of the guest state
+// that made this call.
+void* TlsGetAddr(const std::uint64_t* index) {
+    if (currentCall == nullptr || index[0] >= tlsOffsets.size()) {
+        std::fprintf(stderr, "[aps5-fex] __tls_get_addr for TLS module %llu\n", static_cast<unsigned long long>(index[0]));
+        std::abort();
+    }
+    return reinterpret_cast<void*>(currentCall->state->fs_cached - tlsOffsets[index[0]] + index[1]);
+}
+
 // The layout libc's dl_iterate_phdr reports.
 struct ImageInfo {
     std::uintptr_t address;
@@ -223,17 +235,31 @@ void Bridge::Open(const std::string& name) {
     }
 }
 
-void Bridge::Connect(const GuestImage& image) {
-    void* registerImage = nullptr;
+void Bridge::Connect() {
     void* setUnwind = nullptr;
-    for (void* library : handles) {
-        if (registerImage == nullptr) registerImage = dlsym(library, "Aps5RegisterGuestImage_nid_no_patch");
+    for (void* library : handles)
         if (setUnwind == nullptr) setUnwind = dlsym(library, "Aps5SetBridgeUnwind_nid_no_patch");
-    }
-    if (registerImage == nullptr || setUnwind == nullptr) throw std::runtime_error("libc has no guest image or unwind hooks");
-    const ImageInfo info {image.Base(), "", image.ProgramHeaders(), static_cast<std::uint16_t>(image.ProgramHeaderCount())};
-    reinterpret_cast<void (*)(const ImageInfo*)>(registerImage)(&info);
+    if (setUnwind == nullptr) throw std::runtime_error("libc has no unwind hooks");
     reinterpret_cast<void (*)(void (*)(std::uintptr_t*), void (*)(const std::uintptr_t*))>(setUnwind)(CaptureGuestFrame, ResumeGuestFrame);
+}
+
+void Bridge::Register(const GuestImage& image, const std::string& name) {
+    void* registerImage = nullptr;
+    for (void* library : handles)
+        if (registerImage == nullptr) registerImage = dlsym(library, "Aps5RegisterGuestImage_nid_no_patch");
+    if (registerImage == nullptr) throw std::runtime_error("libc has no guest image hook");
+    const ImageInfo info {image.Base(), imageNames.emplace_back(name).c_str(), image.ProgramHeaders(),
+                          static_cast<std::uint16_t>(image.ProgramHeaderCount())};
+    reinterpret_cast<void (*)(const ImageInfo*)>(registerImage)(&info);
+}
+
+void Bridge::SetTlsOffsets(std::vector<std::uint64_t> offsets) {
+    tlsOffsets = std::move(offsets);
+}
+
+std::uint64_t Bridge::TlsGetAddrStub() {
+    if (tlsGetAddrStub == 0) tlsGetAddrStub = AddStub(reinterpret_cast<void*>(&TlsGetAddr), "__tls_get_addr");
+    return tlsGetAddrStub;
 }
 
 std::uint64_t Bridge::AddStub(void* address, const std::string& name, Variadic variadic, std::uint8_t fixed, bool x87Result) {

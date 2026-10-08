@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -33,8 +34,15 @@ public:
 
     void Open(const std::string& name);
 
-    // Tells libc about the guest executable, and how to unwind its frames and resume them.
-    void Connect(const GuestImage& image);
+    // Tells libc how to unwind guest frames and resume them.
+    void Connect();
+    // Tells libc's dl_iterate_phdr about a guest image; the executable has no name.
+    void Register(const GuestImage& image, const std::string& name);
+
+    // How far below the thread pointer each TLS module's block lies, by module number, for the
+    // __tls_get_addr the bridge provides; and the stub guest code calls it through.
+    void SetTlsOffsets(std::vector<std::uint64_t> offsets);
+    std::uint64_t TlsGetAddrStub();
 
     // The address guest code uses for an imported name: a library variable itself, or the stub of a
     // library function. A name no library exports gets a stub that stops the program when called;
@@ -90,6 +98,8 @@ private:
     std::vector<Function> functions;
     std::unordered_map<std::string, std::uint64_t> resolved;
     std::vector<std::string> missing;
+    std::deque<std::string> imageNames;
+    std::uint64_t tlsGetAddrStub = 0;
     std::uint8_t* stubs = nullptr;
     void (*setBridgeVaList)(void*) = nullptr;
     bool trace = false;

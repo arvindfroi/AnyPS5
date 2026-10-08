@@ -68,12 +68,40 @@ def compiled_executable(directory, sources, libraries, extra=()):
     fex_toolchain.make_header_room(directory / "input.elf")
 
 
+def compiled_modules(directory, modules, main, libraries):
+    """Builds input/eboot.elf from main and input/sce_module from modules, a list of (source, module
+    name, the earlier modules it links against), with stub libraries for the imports."""
+    staged = directory / "input"
+    (staged / "sce_module").mkdir(parents=True)
+    stubs = []
+    for name, names in libraries.items():
+        fex_toolchain.stub_library(names, directory / name, name)
+        stubs.append(directory / name)
+    built = {}
+    for source, name, needed in modules:
+        obj = directory / (pathlib.Path(source).stem + ".o")
+        fex_toolchain.compile(MACOS / source, obj, pic=True)
+        fex_toolchain.nidify(obj, obj.with_suffix(".nid.o"))
+        built[name] = staged / "sce_module" / name
+        fex_toolchain.link_module([obj.with_suffix(".nid.o")], [built[module] for module in needed] + stubs, built[name], name)
+    obj = directory / "main.o"
+    fex_toolchain.compile(MACOS / main, obj)
+    fex_toolchain.nidify(obj, directory / "main.nid.o")
+    fex_toolchain.link_executable([directory / "main.nid.o"], list(reversed(built.values())) + stubs, staged / "eboot.elf")
+    fex_toolchain.make_header_room(staged / "eboot.elf")
+
+
 # The C++ programs: their builder and the exit status they report.
 COMPILED = {
     "exception": (lambda d: compiled_executable(d, ["exception.cpp"], None), 43),
     "c-cleanup": (lambda d: compiled_executable(d, ["c_cleanup.c", "c_cleanup_main.cpp"], None), 47),
     "threads": (lambda d: compiled_executable(d, ["threads.cpp"], {"libc.prx": ["exit"],
                 "libkernel.prx": ["scePthreadCreate", "scePthreadJoin"]}), 51),
+    "module": (lambda d: compiled_modules(d, [("greet.cpp", "libgreet.prx", [])], "module_main.cpp",
+               {"libc.prx": ["puts", "exit", "memset", "__tls_get_addr"], "libkernel.prx": ["sceKernelGetModuleInfoForUnwind"]}), 143),
+    "tls-modules": (lambda d: compiled_modules(d, [("tls_owner.cpp", "libowner.prx", []), ("tls_user.cpp", "libuser.prx", ["libowner.prx"])],
+                    "tls_modules_main.cpp", {"libc.prx": ["exit", "__tls_get_addr"],
+                    "libkernel.prx": ["scePthreadCreate", "scePthreadJoin"]}), 47),
 }
 
 
@@ -90,8 +118,11 @@ def main():
         with tempfile.TemporaryDirectory(prefix=f"aps5-fex-{name}-") as directory:
             directory = pathlib.Path(directory)
             build(directory)
-            relinked = subprocess.run([str(relinker), "--skip-sce-module", "input.elf", "eboot.elf"], cwd=directory,
-                                      capture_output=True, text=True, timeout=60)
+            # A program with guest modules is staged in input/ with its sce_module directory.
+            modules = (directory / "input" / "sce_module").exists()
+            source = "input/eboot.elf" if modules else "input.elf"
+            relinked = subprocess.run([str(relinker), *([] if modules else ["--skip-sce-module"]), source, "eboot.elf"],
+                                      cwd=directory, capture_output=True, text=True, timeout=60)
             if relinked.returncode != 0:
                 failures.append(f"{name}: relink failed: {relinked.stderr.strip()}")
                 continue

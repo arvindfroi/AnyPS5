@@ -2,7 +2,7 @@
 enable_language(ASM)
 set(APS5_FEXCORE_BUILD_DIR "${APS5_FEXCORE_DIR}/build-macos" CACHE PATH "The FEXCore build directory")
 
-add_executable(aps5-fex src/Main.cpp src/Bridge.cpp src/GuestCpu.cpp src/GuestImage.cpp src/Trampolines.S)
+add_executable(aps5-fex src/Main.cpp src/Bridge.cpp src/GuestCpu.cpp src/GuestImage.cpp src/GuestProgram.cpp src/Trampolines.S)
 target_compile_features(aps5-fex PRIVATE cxx_std_20)
 target_include_directories(aps5-fex PRIVATE
     ${APS5_FEXCORE_DIR}/FEXCore/include

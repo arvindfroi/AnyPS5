@@ -65,17 +65,28 @@ constexpr std::uint32_t PT_TLS = 7;
 constexpr std::int64_t DT_NULL = 0;
 constexpr std::int64_t DT_NEEDED = 1;
 constexpr std::int64_t DT_PLTRELSZ = 2;
+constexpr std::int64_t DT_HASH = 4;
 constexpr std::int64_t DT_STRTAB = 5;
 constexpr std::int64_t DT_SYMTAB = 6;
 constexpr std::int64_t DT_RELA = 7;
 constexpr std::int64_t DT_RELASZ = 8;
+constexpr std::int64_t DT_INIT = 12;
 constexpr std::int64_t DT_JMPREL = 23;
+constexpr std::int64_t DT_INIT_ARRAY = 25;
+constexpr std::int64_t DT_INIT_ARRAYSZ = 27;
 constexpr std::uint32_t R_X86_64_NONE = 0;
 constexpr std::uint32_t R_X86_64_64 = 1;
 constexpr std::uint32_t R_X86_64_GLOB_DAT = 6;
 constexpr std::uint32_t R_X86_64_JUMP_SLOT = 7;
 constexpr std::uint32_t R_X86_64_RELATIVE = 8;
+constexpr std::uint32_t R_X86_64_DTPMOD64 = 16;
+constexpr std::uint32_t R_X86_64_DTPOFF64 = 17;
+constexpr std::uint32_t R_X86_64_TPOFF64 = 18;
+constexpr unsigned char STB_LOCAL = 0;
 constexpr unsigned char STB_WEAK = 2;
+constexpr unsigned char STT_TLS = 6;
+constexpr unsigned char STV_INTERNAL = 1;
+constexpr unsigned char STV_HIDDEN = 2;
 constexpr std::uint64_t PageSize = 0x4000;
 
 std::uint64_t PageDown(std::uint64_t value) { return value & ~(PageSize - 1); }
@@ -83,7 +94,7 @@ std::uint64_t PageUp(std::uint64_t value) { return (value + PageSize - 1) & ~(Pa
 
 }
 
-GuestImage::GuestImage(const std::filesystem::path& path) {
+GuestImage::GuestImage(const std::filesystem::path& path) : path(path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) throw std::runtime_error("cannot open " + path.string());
     const std::vector<char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -134,11 +145,49 @@ GuestImage::GuestImage(const std::filesystem::path& path) {
     entry = base + header.entry;
     if (dynamic == 0) throw std::runtime_error(path.string() + " has no dynamic segment");
 
-    std::uint64_t strings = 0;
-    for (auto* tag = reinterpret_cast<const DynamicEntry*>(base + dynamic); tag->tag != DT_NULL; ++tag)
+    std::uint64_t strings = 0, symbols = 0, hash = 0;
+    for (auto* tag = reinterpret_cast<const DynamicEntry*>(base + dynamic); tag->tag != DT_NULL; ++tag) {
         if (tag->tag == DT_STRTAB) strings = base + tag->value;
+        if (tag->tag == DT_SYMTAB) symbols = base + tag->value;
+        if (tag->tag == DT_HASH) hash = base + tag->value;
+    }
     for (auto* tag = reinterpret_cast<const DynamicEntry*>(base + dynamic); tag->tag != DT_NULL; ++tag)
         if (tag->tag == DT_NEEDED) needed.emplace_back(reinterpret_cast<const char*>(strings + tag->value));
+    // A module's exports; the relinker gives a module a DT_HASH, whose chain count is its number of
+    // symbols, and an executable exports nothing.
+    if (hash != 0 && symbols != 0) {
+        const std::uint32_t count = reinterpret_cast<const std::uint32_t*>(hash)[1];
+        for (std::uint32_t index = 1; index < count; ++index) {
+            const auto& symbol = reinterpret_cast<const Symbol*>(symbols)[index];
+            const unsigned visibility = symbol.other & 3;
+            if (symbol.section == 0 || (symbol.info >> 4) == STB_LOCAL || visibility == STV_INTERNAL || visibility == STV_HIDDEN) continue;
+            const bool tlsSymbol = (symbol.info & 15) == STT_TLS;
+            exports.emplace(reinterpret_cast<const char*>(strings + symbol.name), Exported {tlsSymbol ? symbol.value : base + symbol.value, tlsSymbol});
+        }
+    }
+}
+
+std::optional<GuestSymbol> GuestImage::Export(const std::string& name) const {
+    const auto found = exports.find(name);
+    if (found == exports.end()) return std::nullopt;
+    if (!found->second.tls) return GuestSymbol {found->second.value};
+    return GuestSymbol {0, true, tlsModule, found->second.value, tlsOffset};
+}
+
+std::vector<std::uint64_t> GuestImage::Initializers() const {
+    std::uint64_t init = 0, array = 0, arraySize = 0;
+    for (auto* tag = reinterpret_cast<const DynamicEntry*>(base + dynamic); tag->tag != DT_NULL; ++tag) {
+        if (tag->tag == DT_INIT) init = base + tag->value;
+        if (tag->tag == DT_INIT_ARRAY) array = base + tag->value;
+        if (tag->tag == DT_INIT_ARRAYSZ) arraySize = tag->value;
+    }
+    std::vector<std::uint64_t> functions;
+    if (init != 0) functions.push_back(init);
+    for (std::size_t i = 0; i < arraySize / sizeof(std::uint64_t); ++i) {
+        const std::uint64_t function = reinterpret_cast<const std::uint64_t*>(array)[i];
+        if (function != 0 && function != ~std::uint64_t {0}) functions.push_back(function);
+    }
+    return functions;
 }
 
 GuestImage::~GuestImage() {
@@ -158,15 +207,23 @@ void GuestImage::Relocate(const Resolver& resolve) {
         default: break;
         }
     }
-    const auto symbolAddress = [&](std::uint32_t index) -> std::uint64_t {
-        if (index == 0) return 0;
+    const auto symbolOf = [&](std::uint32_t index) -> GuestSymbol {
+        if (index == 0) return {0, false, tlsModule, 0, tlsOffset};
         const auto& symbol = reinterpret_cast<const Symbol*>(symbols)[index];
-        if (symbol.section != 0) return base + symbol.value;
+        if (symbol.section != 0) {
+            if ((symbol.info & 15) == STT_TLS) return {0, true, tlsModule, symbol.value, tlsOffset};
+            return {base + symbol.value};
+        }
         const std::string name(reinterpret_cast<const char*>(strings + symbol.name));
         const bool weak = (symbol.info >> 4) == STB_WEAK;
-        const std::uint64_t address = resolve(name, weak);
-        if (address == 0 && !weak) throw std::runtime_error("unresolved import " + name);
-        return address;
+        if (const auto resolved = resolve(name, weak)) return *resolved;
+        if (weak) return {};
+        throw std::runtime_error("unresolved import " + name + " in " + path.string());
+    };
+    const auto tlsOf = [&](std::uint32_t index) {
+        const GuestSymbol symbol = symbolOf(index);
+        if (index != 0 && !symbol.tls) throw std::runtime_error("a TLS relocation names a symbol that is not TLS in " + path.string());
+        return symbol;
     };
     const auto apply = [&](std::uint64_t table, std::uint64_t tableSize) {
         const auto* relocations = reinterpret_cast<const Relocation*>(table);
@@ -177,10 +234,17 @@ void GuestImage::Relocate(const Resolver& resolve) {
             const auto symbol = static_cast<std::uint32_t>(relocation.info >> 32);
             switch (type) {
             case R_X86_64_NONE: break;
-            case R_X86_64_64: *target = symbolAddress(symbol) + relocation.addend; break;
+            case R_X86_64_64: *target = symbolOf(symbol).address + relocation.addend; break;
             case R_X86_64_GLOB_DAT:
-            case R_X86_64_JUMP_SLOT: *target = symbolAddress(symbol); break;
+            case R_X86_64_JUMP_SLOT: *target = symbolOf(symbol).address; break;
             case R_X86_64_RELATIVE: *target = base + relocation.addend; break;
+            case R_X86_64_DTPMOD64: *target = tlsOf(symbol).tlsModule; break;
+            case R_X86_64_DTPOFF64: *target = tlsOf(symbol).tlsValue + relocation.addend; break;
+            case R_X86_64_TPOFF64: {
+                const GuestSymbol tlsSymbol = tlsOf(symbol);
+                *target = tlsSymbol.tlsValue + relocation.addend - tlsSymbol.tlsOffset;
+                break;
+            }
             default: throw std::runtime_error("unsupported relocation type " + std::to_string(type));
             }
         }

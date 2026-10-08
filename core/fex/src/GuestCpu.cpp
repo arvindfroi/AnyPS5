@@ -1,7 +1,7 @@
 #include "GuestCpu.hpp"
 
 #include "Bridge.hpp"
-#include "GuestImage.hpp"
+#include "GuestProgram.hpp"
 
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/Context.h>
@@ -27,6 +27,8 @@
 #include <stdexcept>
 #include <string>
 #include <sys/mman.h>
+#include <utility>
+#include <vector>
 #include <sys/sysctl.h>
 
 namespace Aps5Fex {
@@ -111,9 +113,31 @@ void LogAssertion(const char* message) {
     std::abort();
 }
 
+struct GuestCode {
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+    const Bridge* bridge;
+    const GuestTlsLayout* tls;
+    FEXCore::Context::Context* context;
+};
+
+GuestCode guestCode {};
+
+// The guest image or stubs at address, as [start, end).
+std::optional<std::pair<std::uint64_t, std::uint64_t>> GuestCodeRange(std::uint64_t address) {
+    if (guestCode.bridge == nullptr) return std::nullopt;
+    if (guestCode.bridge->OwnsStub(address)) return std::pair {guestCode.bridge->StubBase(), guestCode.bridge->StubBase() + guestCode.bridge->StubSize()};
+    for (const auto& range : guestCode.ranges)
+        if (address >= range.first && address < range.second) return range;
+    return std::nullopt;
+}
+
+bool IsGuestCode(std::uint64_t address) {
+    return GuestCodeRange(address).has_value();
+}
+
 class BridgeSyscalls final : public FEXCore::HLE::SyscallHandler {
 public:
-    BridgeSyscalls(Bridge& bridge, const GuestImage& image) : bridge(bridge), image(image) {
+    explicit BridgeSyscalls(Bridge& bridge) : bridge(bridge) {
         // The Linux ABI hands the handler rax and rdi as its first arguments.
         OSABI = FEXCore::HLE::SyscallOSABI::OS_LINUX64;
     }
@@ -123,8 +147,8 @@ public:
     }
 
     FEXCore::HLE::ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState*, std::uint64_t address) override {
-        if (bridge.OwnsStub(address)) return {bridge.StubBase(), bridge.StubSize(), false};
-        return {image.Start(), image.Size(), false};
+        if (const auto range = GuestCodeRange(address)) return {range->first, range->second - range->first, false};
+        return {address & ~std::uint64_t {0x3fff}, 0x4000, false};
     }
 
     std::optional<FEXCore::ExecutableFileSectionInfo> LookupExecutableFileSection(FEXCore::Core::InternalThreadState*, std::uint64_t) override {
@@ -133,7 +157,6 @@ public:
 
 private:
     Bridge& bridge;
-    const GuestImage& image;
 };
 
 class CallbackReturns final : public FEXCore::SignalDelegator {
@@ -162,36 +185,19 @@ using CPUState = FEXCore::Core::CPUState;
 constexpr std::size_t Page = 0x4000;
 constexpr std::size_t ThreadStackSize = std::size_t {8} << 20;
 
-struct GuestCode {
-    std::uint64_t imageStart;
-    std::uint64_t imageEnd;
-    const Bridge* bridge;
-    const GuestImage* image;
-    FEXCore::Context::Context* context;
-};
-
-GuestCode guestCode {};
 std::mutex threadsMutex;
 
-bool IsGuestCode(std::uint64_t address) {
-    return guestCode.bridge != nullptr &&
-           ((address >= guestCode.imageStart && address < guestCode.imageEnd) || guestCode.bridge->OwnsStub(address));
-}
-
-// A thread's thread pointer: the executable's TLS block directly below a control block whose first
-// word points at itself and whose word at 0x28 is the stack guard, as the guest's code expects from
-// FS. The block takes the TLS segment's size rounded up to its alignment, which is where the linker
-// put the executable's variables relative to the thread pointer.
-std::uint8_t* CreateThreadPointer(const GuestImage& image, void** allocation) {
+// A thread's thread pointer: the images' TLS blocks below a control block whose first word points at
+// itself and whose word at 0x28 is the stack guard, as the guest's code expects from FS.
+std::uint8_t* CreateThreadPointer(const GuestTlsLayout& tls, void** allocation) {
     constexpr std::size_t ControlBlock = 0x100;
-    const GuestTlsTemplate& tls = image.Tls();
-    const std::size_t block = (tls.memorySize + tls.alignment - 1) / tls.alignment * tls.alignment;
     const std::size_t alignment = std::max<std::size_t>(tls.alignment, 64);
-    const std::size_t offset = (block + alignment - 1) / alignment * alignment;
+    const std::size_t offset = (tls.size + alignment - 1) / alignment * alignment;
     if (posix_memalign(allocation, alignment, offset + ControlBlock) != 0) throw std::bad_alloc();
     std::memset(*allocation, 0, offset + ControlBlock);
     auto* pointer = static_cast<std::uint8_t*>(*allocation) + offset;
-    if (tls.fileSize != 0) std::memcpy(pointer - block, reinterpret_cast<const void*>(image.Base() + tls.address), tls.fileSize);
+    for (const auto& block : tls.blocks)
+        std::memcpy(pointer - block.offset, reinterpret_cast<const void*>(block.templateAddress), block.fileSize);
     const auto self = reinterpret_cast<std::uint64_t>(pointer);
     std::memcpy(pointer, &self, sizeof(self));
     std::uint64_t guard = 0;
@@ -211,7 +217,7 @@ public:
             this->stackSize = stackSize;
             rsp = reinterpret_cast<std::uint64_t>(stack) + stackSize - 8;
         }
-        const std::uint64_t fs = reinterpret_cast<std::uint64_t>(CreateThreadPointer(*guestCode.image, &tls));
+        const std::uint64_t fs = reinterpret_cast<std::uint64_t>(CreateThreadPointer(*guestCode.tls, &tls));
         {
             std::lock_guard lock(threadsMutex);
             thread = guestCode.context->CreateThread(rip, rsp);
@@ -288,11 +294,14 @@ struct Aps5GuestCallFrame {
     std::uint8_t vector[8][16];
 };
 
-// Runs the guest function at target on the arguments of a host call, on the calling thread's guest
-// state, which may be in the middle of the bridge call that led here.
-extern "C" void Aps5RunGuestCall(std::uint64_t target, Aps5GuestCallFrame* frame) {
+namespace Aps5Fex {
+
+namespace {
+
+// Runs the guest function at target on the arguments in frame, on a thread's guest state, which may
+// be in the middle of the bridge call that led here, and leaves its result registers in frame.
+void CallGuest(ThreadState* thread, std::uint64_t target, Aps5GuestCallFrame* frame) {
     using namespace FEXCore::X86State;
-    auto* thread = Aps5Fex::CurrentThread();
     auto& state = thread->CurrentFrame->State;
     const std::uint64_t rip = state.rip;
     std::uint64_t gregs[16];
@@ -320,6 +329,15 @@ extern "C" void Aps5RunGuestCall(std::uint64_t target, Aps5GuestCallFrame* frame
     std::memcpy(state.gregs, gregs, sizeof(gregs));
     std::memcpy(state.xmm.sse.data, xmm, sizeof(xmm));
     state.rip = rip;
+}
+
+}
+
+}
+
+// Runs the guest function that host code called, on the calling thread's guest state.
+extern "C" void Aps5RunGuestCall(std::uint64_t target, Aps5GuestCallFrame* frame) {
+    Aps5Fex::CallGuest(Aps5Fex::CurrentThread(), target, frame);
 }
 
 namespace Aps5Fex {
@@ -350,7 +368,7 @@ void InstallFaultHandler() {
 
 }
 
-GuestCpu::GuestCpu(Bridge& bridge, const GuestImage& image) {
+GuestCpu::GuestCpu(Bridge& bridge, const GuestProgram& program) {
     LogMan::Msg::InstallHandler(LogMessage);
     LogMan::Throw::InstallHandler(LogAssertion);
     CreateCodePool();
@@ -362,12 +380,12 @@ GuestCpu::GuestCpu(Bridge& bridge, const GuestImage& image) {
     // After the reload, which rebuilds the layer this sets.
     FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
 
-    state.reset(new State {BridgeSyscalls(bridge, image), CallbackReturns(bridge), FEXCore::Context::Context::CreateNewContext(HostFeatures())});
+    state.reset(new State {BridgeSyscalls(bridge), CallbackReturns(bridge), FEXCore::Context::Context::CreateNewContext(HostFeatures())});
     state->context->SetSyscallHandler(&state->syscalls);
     state->context->SetSignalDelegator(&state->returns);
     state->context->EnableExitOnHLT();
     if (!state->context->InitCore()) throw std::runtime_error("FEXCore failed to initialise");
-    guestCode = {image.Start(), image.Start() + image.Size(), &bridge, &image, state->context.get()};
+    guestCode = {program.CodeRanges(), &bridge, &program.Tls(), state->context.get()};
     InstallFaultHandler();
 }
 
@@ -375,9 +393,13 @@ GuestCpu::~GuestCpu() {
     guestCode = {};
 }
 
-std::uint64_t GuestCpu::Run(std::uint64_t rip, std::uint64_t rsp) {
+std::uint64_t GuestCpu::Run(std::uint64_t rip, std::uint64_t rsp, const std::vector<std::uint64_t>& initializers) {
     GuestThread main(rip, rsp, 0);
     currentThread = main.Thread();
+    for (const std::uint64_t initializer : initializers) {
+        Aps5GuestCallFrame frame {};
+        CallGuest(currentThread, initializer, &frame);
+    }
     state->context->ExecuteThread(currentThread);
     currentThread = nullptr;
     return main.Thread()->CurrentFrame->State.gregs[FEXCore::X86State::REG_RAX];

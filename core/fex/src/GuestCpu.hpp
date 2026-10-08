@@ -3,11 +3,12 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace Aps5Fex {
 
 class Bridge;
-class GuestImage;
+class GuestProgram;
 
 // FEXCore set up to run the guest's x86-64 code on this arm64 host, with the bridge as its syscall
 // handler. Every host thread that runs guest code has its own guest state, stack and TLS block; a
@@ -15,14 +16,14 @@ class GuestImage;
 // guest code, and gives them back when it ends.
 class GuestCpu {
 public:
-    GuestCpu(Bridge& bridge, const GuestImage& image);
+    GuestCpu(Bridge& bridge, const GuestProgram& program);
     GuestCpu(const GuestCpu&) = delete;
     GuestCpu& operator=(const GuestCpu&) = delete;
     ~GuestCpu();
 
-    // Runs guest code from rip with the given stack on the calling thread until it halts, and returns
-    // its RAX.
-    std::uint64_t Run(std::uint64_t rip, std::uint64_t rsp);
+    // Runs the initializers, then guest code from rip with the given stack, on the calling thread
+    // until it halts, and returns its RAX.
+    std::uint64_t Run(std::uint64_t rip, std::uint64_t rsp, const std::vector<std::uint64_t>& initializers);
 
 private:
     struct State;

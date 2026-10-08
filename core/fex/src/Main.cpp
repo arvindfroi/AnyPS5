@@ -5,7 +5,7 @@
 
 #include "Bridge.hpp"
 #include "GuestCpu.hpp"
-#include "GuestImage.hpp"
+#include "GuestProgram.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -52,19 +52,14 @@ int main(int argc, char** argv) {
     }
     try {
         const auto executable = std::filesystem::absolute(argv[1]);
-        GuestImage image(executable);
         Bridge bridge(executable.parent_path() / "libs");
-        bridge.Open("libkernel.prx");
-        bridge.Open("libc.prx");
-        for (const auto& name : image.Needed()) bridge.Open(name);
-        image.Relocate([&bridge](const std::string& name, bool weak) { return bridge.Resolve(name, weak); });
-        bridge.Connect(image);
+        GuestProgram program(executable, bridge);
         if (!bridge.Missing().empty()) {
             for (const auto& name : bridge.Missing()) std::fprintf(stderr, "[aps5-fex] no library exports %s\n", name.c_str());
         }
         const std::uint64_t rsp = CreateProcessStack(std::vector<std::string>(argv + 1, argv + argc));
-        GuestCpu cpu(bridge, image);
-        const std::uint64_t rax = cpu.Run(image.Entry(), rsp);
+        GuestCpu cpu(bridge, program);
+        const std::uint64_t rax = cpu.Run(program.Executable().Entry(), rsp, program.Initializers());
         std::fprintf(stderr, "[aps5-fex] the guest halted with RAX %#llx\n", static_cast<unsigned long long>(rax));
         return 1;
     } catch (const std::exception& error) {

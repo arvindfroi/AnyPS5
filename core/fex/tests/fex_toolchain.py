@@ -102,6 +102,29 @@ def stub_library(names, out, soname):
     link(["-shared", "-soname", soname, str(out) + ".o", "-o", str(out)])
 
 
+def link_module(objs, libs, out, soname):
+    link(["-shared", "-z", "now", "--hash-style=sysv", "--eh-frame-hdr", "-soname", soname, *map(str, objs), *map(str, libs),
+          "-o", str(out)])
+    clear_static_tls_flag(out)
+
+
+def clear_static_tls_flag(path):
+    """The relinker's guest module reader accepts DT_FLAGS = DF_BIND_NOW only; the linker adds
+    DF_STATIC_TLS for an initial-exec variable."""
+    data = bytearray(pathlib.Path(path).read_bytes())
+    phoff, = struct.unpack_from("<Q", data, 32)
+    phnum, = struct.unpack_from("<H", data, 56)
+    for index in range(phnum):
+        kind, _, offset, _, _, size = struct.unpack_from("<IIQQQQ", data, phoff + index * 56)
+        if kind != 2:
+            continue
+        for entry in range(offset, offset + size, 16):
+            tag, value = struct.unpack_from("<qQ", data, entry)
+            if tag == 30:
+                struct.pack_into("<qQ", data, entry, 30, value & 8)
+    pathlib.Path(path).write_bytes(data)
+
+
 def link_executable(objs, libs, out):
     link(["-pie", "-z", "now", "--hash-style=sysv", "--eh-frame-hdr", "--no-dynamic-linker", "-e", "_start",
           *map(str, objs), *map(str, libs), "-o", str(out)])
