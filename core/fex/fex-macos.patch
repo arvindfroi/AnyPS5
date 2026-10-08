@@ -47,6 +47,55 @@ index 61552a182..0c4b2b0bb 100644
      }
    }
  
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 331db8c8e..3efb2ee07 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -239,6 +239,12 @@ DEF_OP(ProcessorID) {
+     mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0);
+     return;
+   }
++#ifdef __APPLE__
++  // macOS has no getcpu, and the Linux path below would issue an unrelated system call. CPU 0 matches
++  // FHU::Syscalls::getcpu and the APIC ID that CPUID reports there.
++  mov(ARMEmitter::Size::i64Bit, GetReg(Node), ARMEmitter::Reg::zr);
++  return;
++#endif
+ #ifdef _WIN32
+   else {
+     // If on Windows and TPIDRRO isn't supported (like in wine), then this is a programming error.
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 78707ae91..7f804ea41 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -5037,11 +5037,13 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+   //  - Explicitly use an MFENCE before this instruction if you want this behaviour
+   // This instruction is not an execution fence, so subsequent instructions can execute after this
+   //  - Explicitly use an LFENCE after RDTSCP if you want to block this behaviour
++#ifndef __APPLE__
+   if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
+     // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
+     UnimplementedOp(Op);
+     return;
+   }
++#endif
+   auto Counter = CycleCounter(true);
+ 
+   auto ID = _ProcessorID();
+@@ -5051,11 +5053,13 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+ }
+ 
+ void OpDispatchBuilder::RDPIDOp(OpcodeArgs) {
++#ifndef __APPLE__
+   if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
+     // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
+     UnimplementedOp(Op);
+     return;
+   }
++#endif
+   StoreResultGPR(Op, _ProcessorID());
+ }
+ 
 diff --git a/FEXCore/Source/Interface/Core/X86Tables/X86Tables.h b/FEXCore/Source/Interface/Core/X86Tables/X86Tables.h
 index 8bf90e6fd..e3f9bbe0d 100644
 --- a/FEXCore/Source/Interface/Core/X86Tables/X86Tables.h

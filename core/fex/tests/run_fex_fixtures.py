@@ -104,6 +104,8 @@ COMPILED = {
     "fibers": (lambda d: compiled_executable(d, [str(HERE / "fibers.cpp")],
                {"libc.prx": ["exit"], "libSceFiber.prx": ["_sceFiberInitializeImpl", "sceFiberRun", "sceFiberSwitch",
                 "sceFiberReturnToThread"]}), 43),
+    "zen2": (lambda d: compiled_executable(d, [str(HERE / "zen2.cpp")],
+             {"libc.prx": ["exit"], "libkernel.prx": ["mmap", "munmap"]}, ["-march=znver2", "-O2"]), 43),
     "backports": (lambda d: compiled_executable(d, [str(HERE / "backports.cpp")], {"libc.prx": ["exit"]}, ["-march=znver2"]), 43),
     "module": (lambda d: compiled_modules(d, [("greet.cpp", "libgreet.prx", [])], "module_main.cpp",
                {"libc.prx": ["puts", "exit", "memset", "__tls_get_addr"], "libkernel.prx": ["sceKernelGetModuleInfoForUnwind"]}), 143),
