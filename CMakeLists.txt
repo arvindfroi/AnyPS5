@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 if(CMAKE_HOST_APPLE AND NOT ANYPS5_RELINKER_ONLY)
-    set(CMAKE_APPLE_SILICON_PROCESSOR x86_64 CACHE STRING "Host processor CMake reports on Apple silicon")
     set(CMAKE_OSX_ARCHITECTURES x86_64 CACHE STRING "Architectures built on macOS")
+    set(CMAKE_APPLE_SILICON_PROCESSOR ${CMAKE_OSX_ARCHITECTURES} CACHE STRING "Host processor CMake reports on Apple silicon")
 endif()
 project(Relinker CXX)
 
@@ -60,8 +60,8 @@ if(ANYPS5_RELINKER_ONLY)
     return()
 endif()
 
-if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
-    message(FATAL_ERROR "The full build on macOS is x86-64 only; configure without CMAKE_OSX_ARCHITECTURES or set it to x86_64")
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "^(x86_64|arm64)$")
+    message(FATAL_ERROR "The full build on macOS is x86-64 or arm64; configure without CMAKE_OSX_ARCHITECTURES or set it to x86_64 or arm64")
 endif()
 
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)

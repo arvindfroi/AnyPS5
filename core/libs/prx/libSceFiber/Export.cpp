@@ -11,7 +11,9 @@
 #include <thread>
 #include <stdexcept>
 #include <string>
+#if defined(__x86_64__)
 #include <xmmintrin.h>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -201,6 +203,7 @@ static void UnpinStack(const void* context, std::uint64_t bytes) {
 extern "C" void Aps5FiberSwitchStack_nid_no_patch(void** save, void* load);
 extern "C" void Aps5FiberTrampoline_nid_no_patch();
 
+#if defined(__x86_64__)
 asm(".text\n"
     APS5_ASM_FUNCTION("Aps5FiberSwitchStack_nid_no_patch") R"(
     push %rbp
@@ -231,6 +234,17 @@ asm(".text\n"
     call )" APS5_ASM_SYMBOL("Aps5FiberMain_nid_no_patch") R"(
     ud2
 )" APS5_ASM_FUNCTION_END("Aps5FiberTrampoline_nid_no_patch"));
+#else
+extern "C" void Aps5FiberSwitchStack_nid_no_patch(void** save, void* load) {
+    (void)save;
+    (void)load;
+    NotImplemented_nid_no_patch(__func__);
+}
+
+extern "C" void Aps5FiberTrampoline_nid_no_patch() {
+    NotImplemented_nid_no_patch(__func__);
+}
+#endif
 
 struct InitialFrame {
     std::uint32_t mxcsr;
@@ -272,10 +286,15 @@ static void PrepareInitialStack(Fiber* fiber) {
     const auto top = reinterpret_cast<std::uintptr_t>(fiber->context + fiber->contextSize) & ~static_cast<std::uintptr_t>(15);
     auto* frame = reinterpret_cast<InitialFrame*>(top - 256);
     std::memset(frame, 0, sizeof(*frame));
+#if defined(__x86_64__)
     frame->mxcsr = _mm_getcsr();
     std::uint16_t control = 0;
     asm volatile("fnstcw %0" : "=m"(control));
     frame->fpuControl = control;
+#else
+    frame->mxcsr = 0x1F80;
+    frame->fpuControl = 0x037F;
+#endif
     frame->r12 = reinterpret_cast<std::uint64_t>(fiber);
     frame->returnAddress = reinterpret_cast<std::uint64_t>(&Aps5FiberTrampoline_nid_no_patch);
     fiber->savedStack = frame;

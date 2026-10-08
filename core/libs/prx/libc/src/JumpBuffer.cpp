@@ -1,6 +1,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/general/AsmFunction.hpp"
 
+#if defined(__x86_64__)
 // setjmp/longjmp must capture the guest's own frame, so they are written directly in assembly with
 // the guest (System V) calling convention. The saved state fits the guest's 96-byte jmp_buf:
 // return address, rbx, rsp, rbp, r12-r15, MXCSR and the x87 control word.
@@ -36,3 +37,17 @@ asm(".text\n"
     "    ldmxcsr 64(%rdi)\n"
     "    fldcw 68(%rdi)\n"
     "    jmp *0(%rdi)\n");
+#else
+extern "C" int APS5_VABI setjmp_nid_postfix(void* buffer) {
+    (void)buffer;
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+extern "C" void APS5_VABI longjmp_nid_postfix(void* buffer, int value) {
+    (void)buffer;
+    (void)value;
+    NotImplemented_nid_no_patch(__func__);
+    __builtin_unreachable();
+}
+#endif
