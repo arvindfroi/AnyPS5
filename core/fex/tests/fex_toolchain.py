@@ -130,6 +130,40 @@ def link_executable(objs, libs, out):
           *map(str, objs), *map(str, libs), "-o", str(out)])
 
 
+def symbol(path, name):
+    """The address and size of a symbol in an ELF file's symbol table, or of a C++ variable of that name
+    with internal linkage."""
+    data = pathlib.Path(path).read_bytes()
+    shoff, = struct.unpack_from("<Q", data, 0x28)
+    shentsize, shnum = struct.unpack_from("<HH", data, 0x3a)
+    sections = [struct.unpack_from("<IIQQQQIIQQ", data, shoff + i * shentsize) for i in range(shnum)]
+    symtab = next(section for section in sections if section[1] == 2)
+    strtab = sections[symtab[6]]
+    for offset in range(symtab[4], symtab[4] + symtab[5], 24):
+        string, _, _, _, value, size = struct.unpack_from("<IBBHQQ", data, offset)
+        end = data.index(b"\0", strtab[4] + string)
+        if data[strtab[4] + string:end].decode() in (name, f"_ZL{len(name)}{name}"):
+            return value, size
+    raise KeyError(name)
+
+
+def add_process_parameters(path, name="processParameters"):
+    """Adds the PT_SCE_PROCPARAM program header a PS5 executable has, over the named object, to a file
+    whose program header table make_header_room moved to its end."""
+    address, size = symbol(path, name)
+    data = bytearray(pathlib.Path(path).read_bytes())
+    phoff, = struct.unpack_from("<Q", data, 0x20)
+    phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    headers = [struct.unpack_from("<IIQQQQQQ", data, phoff + i * phentsize) for i in range(phnum)]
+    load = next(h for h in headers if h[0] == 1 and h[3] <= address and address + size <= h[3] + h[5])
+    table = data[phoff:phoff + phentsize * phnum]
+    table += struct.pack("<IIQQQQQQ", 0x61000001, 4, load[2] + address - load[3], address, address, size, size, 8)
+    del data[phoff:]
+    struct.pack_into("<H", data, 0x38, phnum + 1)
+    data += table
+    pathlib.Path(path).write_bytes(data)
+
+
 def make_header_room(path, extra=4):
     """Moves the program header table to the end of the file with extra PT_SCE_VERSION entries, which
     the relinker drops, as a PS5 executable has slots for the headers the relinker adds; PT_PHDR

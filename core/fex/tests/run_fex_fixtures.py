@@ -70,6 +70,12 @@ def compiled_executable(directory, sources, libraries, extra=()):
     fex_toolchain.make_header_room(directory / "input.elf")
 
 
+def with_process_parameters(directory, sources, libraries, extra=()):
+    """Like compiled_executable, with PT_SCE_PROCPARAM over the program's processParameters."""
+    compiled_executable(directory, sources, libraries, extra)
+    fex_toolchain.add_process_parameters(directory / "input.elf")
+
+
 def compiled_modules(directory, modules, main, libraries):
     """Builds input/eboot.elf from main and input/sce_module from modules, a list of (source, module
     name, the earlier modules it links against), with stub libraries for the imports."""
@@ -106,6 +112,8 @@ COMPILED = {
                 "sceFiberReturnToThread"]}), 43),
     "zen2": (lambda d: compiled_executable(d, [str(HERE / "zen2.cpp")],
              {"libc.prx": ["exit"], "libkernel.prx": ["mmap", "munmap"]}, ["-march=znver2", "-O2"]), 43),
+    "heap": (lambda d: with_process_parameters(d, [str(HERE / "heap.cpp")],
+             {"libc.prx": ["_init_env", "malloc", "free", "calloc", "realloc", "memalign", "posix_memalign", "exit"]}, ["-O2"]), 43),
     "callbacks": (lambda d: compiled_executable(d, [str(HERE / "callbacks.cpp")],
                   {"libc.prx": ["qsort", "bsearch", "strcmp", "exit"]}, ["-O2"]), 43),
     "floats": (lambda d: compiled_executable(d, [str(HERE / "floats.cpp")], {"libc.prx": ["exit"]},

@@ -112,11 +112,9 @@ extern "C" void Aps5SetBridgeGuestCall_nid_no_patch(std::uint64_t (*call)(std::u
     bridgeGuestCall = call;
 }
 
-// Calls a function the guest gave libc, such as a qsort comparator, with two integer arguments. A host
-// call to guest code would also reach it, but through a fault, which costs microseconds.
-std::uint64_t LibcCallGuest(const void* function, std::uint64_t first, std::uint64_t second) {
+// Calls a function the guest gave libc with six integer arguments, for CallProgram.
+std::uint64_t LibcCallGuest(const void* function, const std::uint64_t* arguments) {
     if (bridgeGuestCall == nullptr) std::abort();
-    const std::uint64_t arguments[6] = {first, second, 0, 0, 0, 0};
     return bridgeGuestCall(reinterpret_cast<std::uint64_t>(function), arguments);
 }
 
