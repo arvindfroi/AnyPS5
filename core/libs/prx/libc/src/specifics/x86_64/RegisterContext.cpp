@@ -105,6 +105,19 @@ namespace {
 void (*bridgeCapture)(std::uintptr_t*) = nullptr;
 void (*bridgeRestore)(const std::uintptr_t*) = nullptr;
 void (*bridgeControl)(std::uint32_t*, std::uint16_t*) = nullptr;
+std::uint64_t (*bridgeGuestCall)(std::uint64_t, const std::uint64_t*) = nullptr;
+}
+
+extern "C" void Aps5SetBridgeGuestCall_nid_no_patch(std::uint64_t (*call)(std::uint64_t target, const std::uint64_t* arguments)) {
+    bridgeGuestCall = call;
+}
+
+// Calls a function the guest gave libc, such as a qsort comparator, with two integer arguments. A host
+// call to guest code would also reach it, but through a fault, which costs microseconds.
+std::uint64_t LibcCallGuest(const void* function, std::uint64_t first, std::uint64_t second) {
+    if (bridgeGuestCall == nullptr) std::abort();
+    const std::uint64_t arguments[6] = {first, second, 0, 0, 0, 0};
+    return bridgeGuestCall(reinterpret_cast<std::uint64_t>(function), arguments);
 }
 
 extern "C" void Aps5SetBridgeControl_nid_no_patch(void (*control)(std::uint32_t* mxcsr, std::uint16_t* fcw)) {

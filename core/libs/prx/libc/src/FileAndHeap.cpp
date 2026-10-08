@@ -26,6 +26,21 @@ static bool WritesFile(const char* mode) {
     return std::strpbrk(mode, "wa+") != nullptr;
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+bool LibcGuestBridged();
+std::uint64_t LibcCallGuest(const void* function, std::uint64_t first, std::uint64_t second);
+#endif
+
+// Calls a comparator the program gave: under FEXCore it is guest code, called through the bridge.
+static int Compare(int (APS5_VABI* compare)(const void*, const void*), const void* left, const void* right) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (LibcGuestBridged())
+        return static_cast<int>(LibcCallGuest(reinterpret_cast<const void*>(compare), reinterpret_cast<std::uint64_t>(left),
+                                              reinterpret_cast<std::uint64_t>(right)));
+#endif
+    return compare(left, right);
+}
+
 extern "C" {
 
 [[noreturn]] void APS5_VABI _ZSt11_Xbad_allocv_nid_postfix();
@@ -281,7 +296,7 @@ void* APS5_VABI bsearch_nid_postfix(const void* key, const void* base, size_t co
         const size_t half = count / 2;
         const size_t middle = first + half;
         const auto* element = bytes + middle * size;
-        const int result = compare(key, element);
+        const int result = Compare(compare, key, element);
         if (result == 0) return const_cast<unsigned char*>(element);
         if (result < 0) count = half;
         else { first = middle + 1; count -= half + 1; }
@@ -306,8 +321,8 @@ void APS5_VABI qsort_nid_postfix(void* base, size_t count, size_t size, int (APS
     const auto siftDown = [bytes, size, compare, &swapElements](size_t root, size_t heapSize) {
         while (root < heapSize / 2) {
             size_t child = root * 2 + 1;
-            if (child + 1 < heapSize && compare(bytes + child * size, bytes + (child + 1) * size) < 0) ++child;
-            if (compare(bytes + root * size, bytes + child * size) >= 0) return;
+            if (child + 1 < heapSize && Compare(compare, bytes + child * size, bytes + (child + 1) * size) < 0) ++child;
+            if (Compare(compare, bytes + root * size, bytes + child * size) >= 0) return;
             swapElements(root, child);
             root = child;
         }

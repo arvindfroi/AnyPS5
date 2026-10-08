@@ -1,5 +1,6 @@
 #include "Bridge.hpp"
 
+#include "GuestCpu.hpp"
 #include "GuestImage.hpp"
 
 #include <FEXCore/Core/CoreState.h>
@@ -277,6 +278,8 @@ void Bridge::Connect() {
     reinterpret_cast<void (*)(void (*)(std::uintptr_t*), void (*)(const std::uintptr_t*))>(setUnwind)(CaptureGuestFrame, ResumeGuestFrame);
     if (void* setControl = HostSymbol("Aps5SetBridgeControl_nid_no_patch"))
         reinterpret_cast<void (*)(void (*)(std::uint32_t*, std::uint16_t*))>(setControl)(GuestControl);
+    if (void* setCall = HostSymbol("Aps5SetBridgeGuestCall_nid_no_patch"))
+        reinterpret_cast<void (*)(std::uint64_t (*)(std::uint64_t, const std::uint64_t*))>(setCall)(CallGuestFunction);
     if (void* setFiber = HostSymbol("Aps5SetFiberBridge_nid_no_patch")) {
         using SetFiberBridge = void (*)(void (*)(std::uintptr_t*), void (*)(const std::uintptr_t*), void (*)(std::uint32_t*, std::uint16_t*),
                                         std::uint64_t);

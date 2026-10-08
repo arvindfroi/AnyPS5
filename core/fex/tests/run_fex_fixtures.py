@@ -106,6 +106,8 @@ COMPILED = {
                 "sceFiberReturnToThread"]}), 43),
     "zen2": (lambda d: compiled_executable(d, [str(HERE / "zen2.cpp")],
              {"libc.prx": ["exit"], "libkernel.prx": ["mmap", "munmap"]}, ["-march=znver2", "-O2"]), 43),
+    "callbacks": (lambda d: compiled_executable(d, [str(HERE / "callbacks.cpp")],
+                  {"libc.prx": ["qsort", "bsearch", "strcmp", "exit"]}, ["-O2"]), 43),
     "floats": (lambda d: compiled_executable(d, [str(HERE / "floats.cpp")], {"libc.prx": ["exit"]},
                ["-march=znver2", "-O2", "-frounding-math"]), 43),
     "crypto": (lambda d: compiled_executable(d, [str(HERE / "crypto.cpp")], {"libc.prx": ["exit"]}, ["-march=znver2", "-O2"]), 43),

@@ -356,6 +356,17 @@ extern "C" void Aps5RunGuestCall(std::uint64_t target, Aps5GuestCallFrame* frame
     Aps5Fex::CallGuest(Aps5Fex::CurrentThread(), target, frame);
 }
 
+std::uint64_t Aps5Fex::CallGuestFunction(std::uint64_t target, const std::uint64_t* arguments) {
+    if (!IsGuestCode(target)) {
+        using Host = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
+        return reinterpret_cast<Host>(target)(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5]);
+    }
+    Aps5GuestCallFrame frame {};
+    std::memcpy(frame.gpr, arguments, 6 * sizeof(arguments[0]));
+    Aps5RunGuestCall(target, &frame);
+    return frame.gpr[0];
+}
+
 namespace Aps5Fex {
 
 namespace {

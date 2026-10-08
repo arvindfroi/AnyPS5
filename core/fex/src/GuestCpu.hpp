@@ -10,6 +10,11 @@ namespace Aps5Fex {
 class Bridge;
 class GuestProgram;
 
+// Calls a function the guest gave a library, such as a qsort comparator, with six integer arguments and
+// gives its integer result: guest code runs on the calling thread's guest state without the fault that
+// a host call to it takes, and a host function is called directly.
+std::uint64_t CallGuestFunction(std::uint64_t target, const std::uint64_t* arguments);
+
 // FEXCore set up to run the guest's x86-64 code on this arm64 host, with the bridge as its syscall
 // handler. Every host thread that runs guest code has its own guest state, stack and TLS block; a
 // thread the guest did not start here, such as one a library created, gets them when it first calls
