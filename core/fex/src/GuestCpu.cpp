@@ -253,9 +253,10 @@ GuestCpu::GuestCpu(Bridge& bridge, const GuestImage& image) {
     FEXCore::Allocator::mmap = PoolMmap;
     FEXCore::Allocator::munmap = PoolMunmap;
     FEXCore::Config::Initialize();
-    FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
     FEXCore::Config::Load();
     FEXCore::Config::ReloadMetaLayer();
+    // After the reload, which rebuilds the layer this sets.
+    FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
 
     state.reset(new State {BridgeSyscalls(bridge, image), CallbackReturns(bridge), FEXCore::Context::Context::CreateNewContext(HostFeatures())});
     state->context->SetSyscallHandler(&state->syscalls);

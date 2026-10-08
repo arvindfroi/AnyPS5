@@ -20,9 +20,8 @@ namespace Aps5Fex {
 // calls their functions. A stub loads its number into eax and jumps to a common trampoline, which
 // stores the argument registers in a block on the guest stack and executes syscall with the block in
 // rdi; Call() runs the library function with the System V arguments moved to their AAPCS64 places and
-// leaves the result registers in the block, from which the trampoline loads them. The registers go
-// through memory because FEXCore does not always write registers that the syscall's own block set to
-// the guest state before it calls the handler.
+// leaves the result registers in the block, from which the trampoline loads them. The block is laid
+// out as a System V register save area, so it also serves the guest list of a variadic function.
 class Bridge {
 public:
     explicit Bridge(std::filesystem::path libraries);
@@ -51,9 +50,21 @@ public:
     std::uint64_t Call(std::uint64_t number, std::uint64_t block, std::uint64_t rip);
 
 private:
+    // How a variadic library function takes the arguments after its fixed ones.
+    enum class Variadic : std::uint8_t {
+        None,
+        // As a guest list, which libc's variadic functions take through Aps5SetBridgeVaList.
+        GuestList,
+        // As integers in AAPCS64's variadic stack slots.
+        Integers,
+        Unsupported,
+    };
+
     struct Function {
         void* address;
         std::string name;
+        Variadic variadic;
+        std::uint8_t fixed;
     };
 
     static constexpr std::size_t StubBytes = 16;
@@ -62,7 +73,7 @@ private:
     static constexpr std::size_t FirstStubOffset = 0x100;
     static constexpr std::uint32_t FirstStub = 0x41500000;
 
-    std::uint64_t AddStub(void* address, const std::string& name);
+    std::uint64_t AddStub(void* address, const std::string& name, Variadic variadic = Variadic::None, std::uint8_t fixed = 0);
 
     std::filesystem::path directory;
     std::vector<void*> handles;
@@ -71,6 +82,7 @@ private:
     std::unordered_map<std::string, std::uint64_t> resolved;
     std::vector<std::string> missing;
     std::uint8_t* stubs = nullptr;
+    void (*setBridgeVaList)(void*) = nullptr;
     bool trace = false;
 };
 
