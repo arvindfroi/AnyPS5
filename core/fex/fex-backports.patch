@@ -1,0 +1,545 @@
+Fixes from FEX-Emu/FEX (MIT) since FEX-2607, the release madeira's fork is based on, each as its
+mainline commit without that commit's unit tests. build-fexcore.sh applies these, then fex-macos.patch.
+
+commit 655102fc7da82ce9448b284bc362edd2121ef4ef
+Author: Simon Scherer <git69566@pinebound.com>
+Date:   Wed, 8 Jul 2026 09:50:45 +0200
+
+    JIT/ALUOps: Fix operand overlapping bug for pdep
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+index f9b470d077..236622249e 100644
+--- a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+@@ -774,7 +774,7 @@ DEF_OP(PDep) {
+     // Now, they're copied, so we can start setting Dest (even if it overlaps with
+     // one of them).  Handle early exit case
+     mov(EmitSize, Dest, 0);
+-    (void)cbz(EmitSize, OrigMask, &Done);
++    (void)cbz(EmitSize, Mask, &Done);
+ 
+     // Setup for first iteration
+     neg(EmitSize, T0, Mask);
+commit 3d65c030a8b555153df4ad27de950814b75a7a16
+Author: Simon Scherer <git69566@pinebound.com>
+Date:   Wed, 8 Jul 2026 14:58:32 +0200
+
+    OpcodeDispatcher: Fix 32bit cmpxchg zero extension with eax as destination operand and remove incorrect comment.
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 3432ca1c8e..b4541e6fcd 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -3877,7 +3877,6 @@ void OpDispatchBuilder::CMPXCHGOp(OpcodeArgs) {
+         // This allows us to only hit the ZEXT case on failure
+         Ref RAXResult = NZCVSelect(OpSize::i64Bit, CondClass::EQ, Src3, Src1Lower);
+ 
+-        // When the size is 4 we need to make sure not zext the GPR when the comparison fails
+         StoreGPRRegister(X86State::REG_RAX, RAXResult);
+       } else {
+         StoreGPRRegister(X86State::REG_RAX, Src1Lower, Size);
+@@ -3891,7 +3890,7 @@ void OpDispatchBuilder::CMPXCHGOp(OpcodeArgs) {
+     if (GPRSize == OpSize::i64Bit && Size == OpSize::i32Bit) {
+       Src2Lower = _Bfe(GPRSize, IR::OpSizeAsBits(Size), 0, Src2);
+     }
+-    Ref DestResult = Trivial ? Src2 : NZCVSelect(OpSize::i64Bit, CondClass::EQ, Src2Lower, Src1);
++    Ref DestResult = Trivial ? Src2Lower : NZCVSelect(OpSize::i64Bit, CondClass::EQ, Src2Lower, Src1);
+ 
+     // Store in to GPR Dest
+     if (GPRSize == OpSize::i64Bit && Size == OpSize::i32Bit) {
+commit 9d18ecc5cbcc295d04dec3ee48cb0d5547ea20fd
+Author: Ryan Houdek <Sonicadvance1@gmail.com>
+Date:   Wed, 8 Jul 2026 17:41:03 -0700
+
+    FEXCore: Fixes a crash with multiblock if `ProcessorID` IR op is encountered
+
+diff --git a/FEXCore/Source/Interface/Core/CPUID.cpp b/FEXCore/Source/Interface/Core/CPUID.cpp
+index cab6eaf659..ac5f5c14b6 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.cpp
++++ b/FEXCore/Source/Interface/Core/CPUID.cpp
+@@ -650,6 +650,13 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_06h(uint32_t Leaf) const {
+ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
+   FEXCore::CPUID::FunctionResults Res {};
+   if (Leaf == 0) {
++#ifndef _WIN32
++    constexpr uint32_t SUPPORTS_RDPID = 1;
++#else
++    // RDPID under WIN32 is only supported if CPUIndex is available in TPIDRRO.
++    const uint32_t SUPPORTS_RDPID = SupportsCPUIndexInTPIDRRO;
++#endif
++
+     // Disable Enhanced REP MOVS when TSO is enabled.
+     // vcruntime140 memmove will use `rep movsb` in this case which completely destroys perf in Hades(appId 1145360)
+     // This is due to LRCPC performance on Cortex being abysmal.
+@@ -715,7 +722,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
+               (0 << 19) |                               // MPX MAWAU
+               (0 << 20) |                               // MPX MAWAU
+               (0 << 21) |                               // MPX MAWAU
+-              (1 << 22) |                               // RDPID Read Processor ID
++              (SUPPORTS_RDPID << 22) |                  // RDPID Read Processor ID
+               (0 << 23) |                               // AES Key Locker
+               (1 << 24) |                               // bus-lock-detect
+               (0 << 25) |                               // CLDEMOTE
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index b4541e6fcd..31f9eddc09 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -5037,7 +5037,11 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+   //  - Explicitly use an MFENCE before this instruction if you want this behaviour
+   // This instruction is not an execution fence, so subsequent instructions can execute after this
+   //  - Explicitly use an LFENCE after RDTSCP if you want to block this behaviour
+-
++  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
++    // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
++    UnimplementedOp(Op);
++    return;
++  }
+   auto Counter = CycleCounter(true);
+ 
+   auto ID = _ProcessorID();
+@@ -5047,6 +5051,11 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+ }
+ 
+ void OpDispatchBuilder::RDPIDOp(OpcodeArgs) {
++  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
++    // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
++    UnimplementedOp(Op);
++    return;
++  }
+   StoreResultGPR(Op, _ProcessorID());
+ }
+ 
+commit fe08b96844546561fc640a7ed1d359f6fa00165c
+Author: Simon Scherer <git69566@pinebound.com>
+Date:   Thu, 9 Jul 2026 09:28:07 +0200
+
+    OpcodeDispatcher: Fix cvttss2si when prefixed with 0x66
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+index f5cffe8980..4ce7a203ff 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+@@ -2581,9 +2581,10 @@ Ref OpDispatchBuilder::CVTGPR_To_FPRImpl(OpcodeArgs, IR::OpSize DstElementSize,
+ }
+ 
+ Ref OpDispatchBuilder::CVTFPR_To_GPRImpl(OpcodeArgs, Ref Src, IR::OpSize SrcElementSize, bool HostRoundingMode) {
+-  // GPR size is determined by REX.W
+   // Source Element size is determined by instruction
+-  const auto GPRSize = OpSizeFromDst(Op);
++  // GPR size is determined by REX.W
++  // But instruction does not support 16bit register operands
++  const auto GPRSize = std::max(OpSize::i32Bit, OpSizeFromDst(Op));
+ 
+   if (CTX->HostFeatures.SupportsFRINTTS) {
+     // When we have FRINTTS, this is a two-step process. First, we round to the
+@@ -2616,7 +2617,9 @@ void OpDispatchBuilder::CVTFPR_To_GPR(OpcodeArgs, IR::OpSize SrcElementSize, boo
+   const auto SrcSize = Op->Src[0].IsGPR() ? OpSize::i128Bit : SrcElementSize;
+   Ref Src = LoadSourceFPR_WithOpSize(Op, Op->Src[0], SrcSize, Op->Flags);
+   Ref Result = CVTFPR_To_GPRImpl(Op, Src, SrcElementSize, HostRoundingMode);
+-  StoreResultGPR(Op, Result);
++
++  const auto DestSize = std::max(OpSize::i32Bit, OpSizeFromDst(Op));
++  StoreResultGPR_WithOpSize(Op, Op->Dest, Result, DestSize);
+ }
+ 
+ Ref OpDispatchBuilder::Vector_CVT_Int_To_FloatImpl(OpcodeArgs, IR::OpSize SrcElementSize, bool Widen) {
+commit 4d7890142023deee2c85b104d3fd7e5e56fd3c48
+Author: Simon Scherer <git69566@pinebound.com>
+Date:   Thu, 9 Jul 2026 11:14:31 +0200
+
+    OpcodeDispatcher: Fix movd when prefixed with 0x66
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+index f5cffe8980..849c8b02c7 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Vector.cpp
+@@ -2839,11 +2839,15 @@ void OpDispatchBuilder::MOVBetweenGPR_FPR(OpcodeArgs, VectorOpType VectorType) {
+     if (Op->Src[0].IsGPR()) {
+       // Loading from GPR and moving to Vector.
+       Ref Src = LoadSourceFPR_WithOpSize(Op, Op->Src[0], GetGPROpSize(), Op->Flags);
++
++      const auto SrcSize = std::max(OpSize::i32Bit, OpSizeFromSrc(Op));
+       // zext to 128bit
+-      Result = _VCastFromGPR(OpSize::i128Bit, OpSizeFromSrc(Op), Src);
++      Result = _VCastFromGPR(OpSize::i128Bit, SrcSize, Src);
+     } else {
+       // Loading from Memory as a scalar. Zero extend
+-      Result = LoadSourceFPR(Op, Op->Src[0], Op->Flags);
++
++      const auto SrcSize = std::max(OpSize::i32Bit, OpSizeFromSrc(Op));
++      Result = LoadSourceFPR_WithOpSize(Op, Op->Src[0], SrcSize, Op->Flags);
+     }
+ 
+     StoreResult_WithAVXInsert(VectorType, RegClass::FPR, Op, Result);
+@@ -2851,14 +2855,19 @@ void OpDispatchBuilder::MOVBetweenGPR_FPR(OpcodeArgs, VectorOpType VectorType) {
+     Ref Src = LoadSourceFPR(Op, Op->Src[0], Op->Flags);
+ 
+     if (Op->Dest.IsGPR()) {
+-      const auto ElementSize = OpSizeFromDst(Op);
++      const auto DstSize = std::max(OpSize::i32Bit, OpSizeFromDst(Op));
++
+       // Extract element from GPR. Zero extending in the process.
+-      Src = _VExtractToGPR(OpSizeFromSrc(Op), ElementSize, Src, 0);
++      Src = _VExtractToGPR(OpSizeFromSrc(Op), DstSize, Src, 0);
+       StoreResultGPR(Op, Op->Dest, Src);
++
++      StoreResultGPR_WithOpSize(Op, Op->Dest, Src, DstSize);
+     } else {
++      const auto DstSize = std::max(OpSize::i32Bit, OpSizeFromDst(Op));
++
+       // Storing first element to memory.
+       Ref Dest = LoadSourceGPR(Op, Op->Dest, Op->Flags, {.LoadData = false});
+-      _StoreMemFPR(OpSizeFromDst(Op), Dest, Src, OpSize::i8Bit);
++      _StoreMemFPR(DstSize, Dest, Src, OpSize::i8Bit);
+     }
+   }
+ }
+commit 54263bb5a7ca26d2527a57d0debdf4e3f8934446
+Author: LC <mai.iam2048@gmail.com>
+Date:   Fri, 10 Jul 2026 05:39:12 -0400
+
+    ALUOps: Fix 32-bit MulH case
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+index e7d4eacfc8..7946ccdd2f 100644
+--- a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+@@ -418,8 +418,8 @@ DEF_OP(MulH) {
+   if (OpSize == IR::OpSize::i32Bit) {
+     sxtw(TMP1, Src1.W());
+     sxtw(TMP2, Src2.W());
+-    mul(ARMEmitter::Size::i32Bit, Dst, TMP1, TMP2);
+-    ubfx(ARMEmitter::Size::i32Bit, Dst, Dst, 32, 32);
++    mul(ARMEmitter::Size::i64Bit, Dst, TMP1, TMP2);
++    ubfx(ARMEmitter::Size::i64Bit, Dst, Dst, 32, 32);
+   } else {
+     smulh(Dst.X(), Src1.X(), Src2.X());
+   }
+commit b5660c8a922c1e5ddfe9bea91abaaf5c52cd48a6
+Author: LC <mai.iam2048@gmail.com>
+Date:   Fri, 10 Jul 2026 05:36:50 -0400
+
+    MiscOps: Avoid stack misalignment in ProcessorID
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index dfd1f22458..aeae4d5075 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -282,7 +282,7 @@ DEF_OP(ProcessorID) {
+   // Load the values returned by the kernel
+   ldp<ARMEmitter::IndexType::OFFSET>(ARMEmitter::WReg::w0, ARMEmitter::WReg::w1, ARMEmitter::Reg::rsp);
+   // Deallocate stack space
+-  sub(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 16);
++  add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::rsp, 16);
+ 
+   // Now that we are done in the syscall we need to carefully peel back the state
+   // First unspill the registers from before
+commit 5080c6ffc567fcc3816911f4e3bbd550d2e80037
+Author: LC <mai.iam2048@gmail.com>
+Date:   Sat, 11 Jul 2026 09:56:53 -0400
+
+    MemoryOps: Avoid double application of base offset in {Load,Store}ContextIndexed unaligned case
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index 8530fbe989..849df0f2c2 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -267,7 +267,7 @@ DEF_OP(LoadContextIndexed) {
+           ldr(Dst.Q(), TMP1, Op->BaseOffset);
+         } else {
+           add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Op->BaseOffset);
+-          ldur(Dst.Q(), TMP1, Op->BaseOffset);
++          ldur(Dst.Q(), TMP1);
+         }
+         break;
+       case IR::OpSize::i256Bit:
+@@ -333,7 +333,7 @@ DEF_OP(StoreContextIndexed) {
+           str(Value.Q(), TMP1, Op->BaseOffset);
+         } else {
+           add(ARMEmitter::Size::i64Bit, TMP1, TMP1, Op->BaseOffset);
+-          stur(Value.Q(), TMP1, Op->BaseOffset);
++          stur(Value.Q(), TMP1);
+         }
+         break;
+       case IR::OpSize::i256Bit:
+commit 613e9ef701799b29086b00da8b1c3478fbc04cac
+Author: LC <mai.iam2048@gmail.com>
+Date:   Sat, 11 Jul 2026 10:09:41 -0400
+
+    MiscOps: Fix round mode clearing for RP/RM modes in PushRoundingMode
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index aeae4d5075..6c2b3499a6 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -168,7 +168,7 @@ DEF_OP(PushRoundingMode) {
+   } else {
+     LOGMAN_THROW_A_FMT(Op->RoundMode == 1 || Op->RoundMode == 2, "expect a valid round mode");
+ 
+-    and_(ARMEmitter::Size::i64Bit, TMP1, Dest, ~(Op->RoundMode << 22));
++    and_(ARMEmitter::Size::i64Bit, TMP1, Dest, ~(3 << 22));
+     orr(ARMEmitter::Size::i64Bit, TMP1, TMP1, (Op->RoundMode == 2 ? 1 : 2) << 22);
+   }
+ 
+commit 9e26c5764304e6027330e58ee0dc5ae5486dbd57
+Author: LC <mai.iam2048@gmail.com>
+Date:   Thu, 16 Jul 2026 09:39:54 -0400
+
+    x87StackOptimizationPass: Fix isValid()
+
+diff --git a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+index 391f44e308..d65dba8636 100644
+--- a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+@@ -96,7 +96,7 @@ class FixedSizeStack {
+   }
+ 
+   bool isValid(size_t Offset) const {
+-    return buffer[Offset].first;
++    return buffer[Offset].Type == StackSlot::VALID;
+   }
+ 
+   void clear() {
+commit 34a87cc94c5914941f72ecb8fe6a099562c06c5c
+Author: Justin Becker <jubecker@nvidia.com>
+Date:   Mon, 27 Jul 2026 15:48:35 -0700
+
+    Decoder: fix illegal LEA encoding
+
+diff --git a/FEXCore/Source/Interface/Core/X86Tables/BaseTables.cpp b/FEXCore/Source/Interface/Core/X86Tables/BaseTables.cpp
+index 53ae7e273a..d943809bb6 100644
+--- a/FEXCore/Source/Interface/Core/X86Tables/BaseTables.cpp
++++ b/FEXCore/Source/Interface/Core/X86Tables/BaseTables.cpp
+@@ -318,7 +318,7 @@ const std::array<X86InstInfo, MAX_PRIMARY_TABLE_SIZE> BaseOps = []() consteval {
+     {0x8A, 1, X86InstInfo{"MOV",    TYPE_INST, GenFlagsSameSize(SIZE_8BIT) | FLAGS_MODRM,         0}},
+     {0x8B, 1, X86InstInfo{"MOV",    TYPE_INST, FLAGS_MODRM,                         0}},
+     {0x8C, 1, X86InstInfo{"MOV",    TYPE_INST, GenFlagsSrcSize(SIZE_16BIT) | FLAGS_MODRM | FLAGS_SF_MOD_DST,                      0}},
+-    {0x8D, 1, X86InstInfo{"LEA",    TYPE_INST, GenFlagsSameSize(SIZE_64BITDEF) | FLAGS_MODRM,                         0}},
++    {0x8D, 1, X86InstInfo{"LEA",    TYPE_INST, GenFlagsSameSize(SIZE_64BITDEF) | FLAGS_MODRM | FLAGS_SF_MOD_MEM_ONLY, 0}},
+     {0x8E, 1, X86InstInfo{"MOV",    TYPE_INST, GenFlagsSameSize(SIZE_16BIT) | FLAGS_MODRM,                      0}},
+     {0x8F, 1, X86InstInfo{"POP",    TYPE_INST, GenFlagsSameSize(SIZE_64BITDEF) | FLAGS_MODRM | FLAGS_SF_MOD_DST | FLAGS_SF_MOD_ZERO_REG | FLAGS_DEBUG_MEM_ACCESS, 0}},
+     {0x90, 8, X86InstInfo{"XCHG",   TYPE_INST, FLAGS_SF_REX_IN_BYTE | FLAGS_SF_SRC_RAX, 0}},
+commit 7f0bdf8d63a7189222c2a0043ca6838436f4c69b
+Author: Simon Scherer <git69566@pinebound.com>
+Date:   Thu, 6 Aug 2026 16:29:29 +0200
+
+    OpcodeDispatcher: Zero OF, SF and AF for FCOMI and FCOMIF64
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index e2239ae0ed..0b2b64083e 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -2131,16 +2131,16 @@ class OpDispatchBuilder final : public IREmitter {
+   }
+ 
+   // Compares two floats and sets flags for a COMISS instruction
+-  void Comiss(IR::OpSize ElementSize, Ref Src1, Ref Src2, bool InvalidateAF = false) {
++  void Comiss(IR::OpSize ElementSize, Ref Src1, Ref Src2) {
+     // First, set flags according to Arm FCMP.
+     HandleNZCVWrite();
+     _FCmp(ElementSize, Src1, Src2);
+     CFInverted = false;
+-    ComissFlags(InvalidateAF);
++    ComissFlags();
+   }
+ 
+   // Sets flags for a COMISS instruction
+-  void ComissFlags(bool InvalidateAF = false) {
++  void ComissFlags() {
+     LOGMAN_THROW_A_FMT(!NZCVDirty, "only expected after fcmp");
+ 
+     // We need to set PF according to the unordered flag. We'd rather do this
+@@ -2155,12 +2155,15 @@ class OpDispatchBuilder final : public IREmitter {
+     Ref V_inv = GetRFLAG(FEXCore::X86State::RFLAG_OF_RAW_LOC, true);
+     SetRFLAG<FEXCore::X86State::RFLAG_PF_RAW_LOC>(V_inv);
+ 
+-    if (!InvalidateAF) {
+-      // Zero AF. Note that the comparison sets the raw PF to 0/1 above, so
+-      // PF[4] is 0 so the XOR with PF will have no effect, so setting the AF
+-      // byte to zero will indeed zero AF as intended.
+-      SetRFLAG<FEXCore::X86State::RFLAG_AF_RAW_LOC>(Constant(0));
+-    }
++    // Intel: OF, SF, and AF set to zero
++    // AMD:   no mention of OF, SF and AF but actual hardware seems to always zero
++    //
++    // Zero AF. Note that the comparison sets the raw PF to 0/1 above, so
++    // PF[4] is 0 so the XOR with PF will have no effect, so setting the AF
++    // byte to zero will indeed zero AF as intended.
++    // OF and SF are zeroed:
++    // _AXFLAG always produces N=0 (SF), V=0 (OF)
++    SetRFLAG<FEXCore::X86State::RFLAG_AF_RAW_LOC>(Constant(0));
+ 
+     // Convert NZCV from the Arm representation to an eXternal representation
+     // that's totally not a euphemism for x86, nuh-uh. But maps to exactly we
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp
+index 2adcf1c94e..d0d6d2616f 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp
+@@ -667,7 +667,6 @@ void OpDispatchBuilder::FCOMI(OpcodeArgs, IR::OpSize Width, bool Integer, OpDisp
+     SetRFLAG<FEXCore::X86State::X87FLAG_C2_LOC>(HostFlag_Unordered);
+     SetRFLAG<FEXCore::X86State::X87FLAG_C3_LOC>(HostFlag_ZF);
+   } else {
+-    // OF, SF, AF, PF all undefined
+     SetCFDirect(HostFlag_CF);
+     SetRFLAG<FEXCore::X86State::RFLAG_ZF_RAW_LOC>(HostFlag_ZF);
+ 
+@@ -675,6 +674,12 @@ void OpDispatchBuilder::FCOMI(OpcodeArgs, IR::OpSize Width, bool Integer, OpDisp
+     // TODO: This could perhaps be optimized?
+     auto PF = _Xor(OpSize::i32Bit, HostFlag_Unordered, Constant(1));
+     SetRFLAG<FEXCore::X86State::RFLAG_PF_RAW_LOC>(PF);
++
++    // Intel: OF, SF, and AF set to zero
++    // AMD:   no mention of OF, SF and AF but actual hardware seems to always zero
++    SetRFLAG<FEXCore::X86State::RFLAG_OF_RAW_LOC>(Constant(0));
++    SetRFLAG<FEXCore::X86State::RFLAG_SF_RAW_LOC>(Constant(0));
++    SetRFLAG<FEXCore::X86State::RFLAG_AF_RAW_LOC>(Constant(0));
+   }
+ 
+   // Set Invalid Operation flag when unordered (NaN comparison)
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87F64.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87F64.cpp
+index 39ba02a487..33fba69015 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87F64.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87F64.cpp
+@@ -367,7 +367,7 @@ void OpDispatchBuilder::FCOMIF64(OpcodeArgs, IR::OpSize Width, bool Integer, OpD
+   } else {
+     HandleNZCVWrite();
+     _F80CmpValue(b);
+-    ComissFlags(true /* InvalidateAF */);
++    ComissFlags();
+   }
+ 
+   if (PopTwice) {
+commit 635befb4c802432897a7a5bd28e6755f29c044a4
+Author: Paris Oplopoios <21157395+OFFTKP@users.noreply.github.com>
+Date:   Sat, 22 Aug 2026 15:47:50 +0300
+
+    FEXCore: Fix CF calculation for BLSMSK and BLSR for 32-bit operands
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 31f9eddc09..01d43168f9 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -1774,7 +1774,7 @@ void OpDispatchBuilder::BLSMSKBMIOp(OpcodeArgs) {
+   InvalidatePF_AF();
+ 
+   // CF set according to the Src
+-  auto CFInv = To01(OpSize::i64Bit, Src);
++  auto CFInv = To01(Size, Src);
+ 
+   // The output of BLSMSK is always nonzero, so TST will clear Z (along with C
+   // and O) while setting S.
+@@ -1792,7 +1792,7 @@ void OpDispatchBuilder::BLSRBMIOp(OpcodeArgs) {
+ 
+   StoreResultGPR(Op, Result);
+ 
+-  auto CFInv = To01(OpSize::i64Bit, Src);
++  auto CFInv = To01(Size, Src);
+ 
+   SetNZ_ZeroCV(Size, Result);
+   SetCFInverted(CFInv);
+commit 6646a5cc720fdca12d5aebe744ea3defb11527b2
+Author: Ryan Houdek <Sonicadvance1@gmail.com>
+Date:   Tue, 25 Aug 2026 15:12:50 -0700
+
+    OpcodeDispatcher: Fixes SHLD by 16 behaviour
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 51b305b65d..20de855327 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -1526,7 +1526,7 @@ void OpDispatchBuilder::SHLDImmediateOp(OpcodeArgs) {
+       Res = _Extr(OpSizeFromSrc(Op), Dest, Src, Size - Shift);
+     }
+ 
+-    CalculateFlags_ShiftLeftImmediate(OpSizeFromSrc(Op), Res, Dest, Shift);
++    CalculateFlags_ShiftLeftImmediate(OpSizeFromSrc(Op), Res, Dest, Shift, true);
+     CalculateDeferredFlags();
+     StoreResultGPR(Op, Res);
+   } else if (Shift == 0 && Size == 32) {
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 0b2b64083e..416bec3b40 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -2375,7 +2375,7 @@ class OpDispatchBuilder final : public IREmitter {
+   void CalculateFlags_MUL(IR::OpSize SrcSize, Ref Res, Ref High);
+   void CalculateFlags_UMUL(Ref High);
+   void CalculateFlags_Logical(IR::OpSize SrcSize, Ref Res);
+-  void CalculateFlags_ShiftLeftImmediate(IR::OpSize SrcSize, Ref Res, Ref Src1, uint64_t Shift);
++  void CalculateFlags_ShiftLeftImmediate(IR::OpSize SrcSize, Ref Res, Ref Src1, uint64_t Shift, bool DoubleWide = false);
+   void CalculateFlags_ShiftRightImmediate(IR::OpSize SrcSize, Ref Res, Ref Src1, uint64_t Shift);
+   void CalculateFlags_ShiftRightDoubleImmediate(IR::OpSize SrcSize, Ref Res, Ref Src1, uint64_t Shift);
+   void CalculateFlags_ShiftRightImmediateCommon(IR::OpSize SrcSize, Ref Res, Ref Src1, uint64_t Shift);
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp
+index 82c1a1a6c6..858e7a4aea 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp
+@@ -432,7 +432,7 @@ void OpDispatchBuilder::CalculateFlags_Logical(IR::OpSize SrcSize, Ref Res) {
+   SetNZP_ZeroCV(SrcSize, Res);
+ }
+ 
+-void OpDispatchBuilder::CalculateFlags_ShiftLeftImmediate(IR::OpSize SrcSize, Ref UnmaskedRes, Ref Src1, uint64_t Shift) {
++void OpDispatchBuilder::CalculateFlags_ShiftLeftImmediate(IR::OpSize SrcSize, Ref UnmaskedRes, Ref Src1, uint64_t Shift, bool DoubleWide) {
+   // No flags changed if shift is zero
+   if (Shift == 0) {
+     return;
+@@ -447,8 +447,12 @@ void OpDispatchBuilder::CalculateFlags_ShiftLeftImmediate(IR::OpSize SrcSize, Re
+     // Extract the last bit shifted in to CF. Shift is already masked, but for
+     // 8/16-bit it might be >= SrcSizeBits, in which case CF is cleared. There's
+     // nothing to do in that case since we already cleared CF above.
++    //
++    // - Double-wide shift has UB when shift is GREATER-THAN operand.
++    // - Single-wide shift has UB when shift is GREATER-THAN-EQUAL operand.
+     const auto SrcSizeBits = IR::OpSizeAsBits(SrcSize);
+-    if (Shift < SrcSizeBits) {
++    const bool ShouldSetCF = DoubleWide ? (Shift <= SrcSizeBits) : (Shift < SrcSizeBits);
++    if (ShouldSetCF) {
+       SetCFDirect(Src1, SrcSizeBits - Shift, true);
+     }
+   }
+commit 7236c2bf0a3aea132051b796a5730958a269ba09
+Author: Simon Scherer <git69566@pinebound.com>
+Date:   Fri, 4 Sep 2026 11:50:25 +0200
+
+    Fix x87 tag word not updating on FST ST(0) self-store
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp
+index b0d0dfc149..b04f47e6f9 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/X87.cpp
+@@ -139,9 +139,7 @@ void OpDispatchBuilder::FST(OpcodeArgs, IR::OpSize Width) {
+ 
+ void OpDispatchBuilder::FSTToStack(OpcodeArgs) {
+   const uint8_t Offset = Op->OP & 7;
+-  if (Offset != 0) {
+-    _StoreStackToStack(Offset);
+-  }
++  _StoreStackToStack(Offset);
+ 
+   if (Op->TableInfo->Flags & X86Tables::InstFlags::FLAGS_POP) {
+     _PopStackDestroy();
+diff --git a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+index 8dcc220e34..f205097a1e 100644
+--- a/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/x87StackOptimizationPass.cpp
+@@ -1041,15 +1041,13 @@ void X87StackOptimization::Run(IREmitter* Emit) {
+         const auto* Op = IROp->C<IROp_StoreStackToStack>();
+         auto Offset = Op->StackLocation;
+ 
+-        if (Offset != 0) {
+-          auto Value = MigrateToSlowPath_IfInvalid();
++        auto Value = MigrateToSlowPath_IfInvalid();
+ 
+-          // Need to store st0 to stack location - basically a copy.
+-          if (SlowPath) {
+-            StoreStackValueAtOffset_Slow(LoadStackValueAtOffset_Slow(), Offset);
+-          } else {
+-            StackData.setTop(*Value, Offset);
+-          }
++        // Need to store st0 to stack location - basically a copy.
++        if (SlowPath) {
++          StoreStackValueAtOffset_Slow(LoadStackValueAtOffset_Slow(), Offset);
++        } else {
++          StackData.setTop(*Value, Offset);
+         }
+         break;
+       }

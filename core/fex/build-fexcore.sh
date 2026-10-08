@@ -1,6 +1,8 @@
 #!/bin/bash
 # Builds FEXCore for arm64 macOS into <directory>/build-macos: madeira's fork at its last MIT-licensed
-# commit, with fex-macos.patch. Configure AnyPS5 with -DAPS5_FEXCORE_DIR=<directory> to build aps5-fex.
+# commit, with the mainline fixes in fex-backports.patch and then fex-macos.patch. Configure AnyPS5 with
+# -DAPS5_FEXCORE_DIR=<directory> to build aps5-fex. A directory made by an earlier version of this script
+# has the patches of that version; make it again to get these.
 set -eu
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FEX="$(cd "$(dirname "${1:?usage: build-fexcore.sh <directory>}")" && pwd)/$(basename "$1")"
@@ -9,6 +11,7 @@ if [ ! -d "$FEX" ]; then
   git -C "$FEX" checkout ac555dd81fa84f86d1927476e152451005e78f49
   git -C "$FEX" submodule update --init --depth 1 External/vixl External/fmt External/xxhash External/range-v3 \
       External/unordered_dense External/zydis External/tracy Source/Common/cpp-optparse
+  git -C "$FEX" apply "$HERE/fex-backports.patch"
   git -C "$FEX" apply "$HERE/fex-macos.patch"
 fi
 cmake -S "$FEX" -B "$FEX/build-macos" -G "Unix Makefiles" -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release \
