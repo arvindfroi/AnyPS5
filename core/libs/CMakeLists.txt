@@ -10,11 +10,14 @@ if(APPLE)
 endif()
 
 # A prx finds the others beside itself. The build-tree rpath would point a patched copy at the
-# unpatched libraries.
+# unpatched libraries. dyld does not know $ORIGIN.
+if(APPLE)
+    set(ANYPS5_PRX_RPATH "@loader_path")
+else()
+    set(ANYPS5_PRX_RPATH "$ORIGIN")
+endif()
 function(configure_prx_rpath target)
-    if(APPLE)
-        set_target_properties(${target} PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "@loader_path")
-    endif()
+    set_target_properties(${target} PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "${ANYPS5_PRX_RPATH}")
 endfunction()
 
 add_executable(nid_patcher
@@ -74,7 +77,7 @@ set_target_properties(libc PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY ${UNPATCHED_DIR}
         ARCHIVE_OUTPUT_DIRECTORY ${IMPLIB_DIR}
         BUILD_WITH_INSTALL_RPATH ON
-        INSTALL_RPATH "$ORIGIN"
+        INSTALL_RPATH "${ANYPS5_PRX_RPATH}"
 )
 
 set(LIBC_UNPATCHED ${UNPATCHED_DIR}/libc.prx)
@@ -127,7 +130,7 @@ foreach(LIB_DIR ${LIBS_DIRS})
                 LIBRARY_OUTPUT_DIRECTORY ${UNPATCHED_DIR}
                 ARCHIVE_OUTPUT_DIRECTORY ${IMPLIB_DIR}
                 BUILD_WITH_INSTALL_RPATH ON
-                INSTALL_RPATH "$ORIGIN"
+                INSTALL_RPATH "${ANYPS5_PRX_RPATH}"
         )
 
         set(UNPATCHED_FILE ${UNPATCHED_DIR}/${LIB_NAME}.prx)

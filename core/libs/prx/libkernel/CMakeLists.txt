@@ -97,7 +97,7 @@ if(BUILD_TESTING)
         COMMAND $<TARGET_FILE:nid_patcher> guest_module_fixture $<TARGET_FILE:guest_module_fixture>
         VERBATIM)
     add_dependencies(guest_module_fixture nid_patcher)
-    set_target_properties(guest_module_fixture PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN")
+    set_target_properties(guest_module_fixture PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "${ANYPS5_PRX_RPATH}")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND NOT WIN32 AND NOT APPLE)
         target_link_options(guest_module_fixture PRIVATE -Wl,--no-as-needed)
