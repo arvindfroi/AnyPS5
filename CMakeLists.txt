@@ -110,7 +110,6 @@ add_subdirectory(core/Decoder/Png)
 add_subdirectory(core/libs)
 add_subdirectory(core/relinker)
 
-set(APS5_FEXCORE_DIR "" CACHE PATH "A FEXCore tree built by core/fex/build-fexcore.sh, to build the arm64 guest runner")
-if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64" AND APS5_FEXCORE_DIR)
+if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64" AND EXISTS ${CMAKE_SOURCE_DIR}/3rdparty/FEX/CMakeLists.txt)
     add_subdirectory(core/fex)
 endif()
