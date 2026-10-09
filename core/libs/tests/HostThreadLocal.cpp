@@ -1,6 +1,5 @@
 #include <cstdlib>
 #include <array>
-#include <future>
 #include <thread>
 #ifdef _WIN32
 #include <windows.h>
@@ -25,11 +24,11 @@ int main() {
 #endif
     for (unsigned i = 0; i < 16; ++i) {
         const auto before = DestroyedHostThreadLocals();
-        std::array<std::future<void>, 4> workers;
+        std::array<std::thread, 4> workers;
         for (auto& worker : workers) {
-            worker = std::async(std::launch::async, [] { TouchHostThreadLocal(); TouchHostThreadLocal(); });
+            worker = std::thread([] { TouchHostThreadLocal(); TouchHostThreadLocal(); });
         }
-        for (auto& worker : workers) worker.get();
+        for (auto& worker : workers) worker.join();
         if (DestroyedHostThreadLocals() != before + 8) std::abort();
     }
 
