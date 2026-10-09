@@ -38,6 +38,13 @@ The bundle holds the title, the prx libraries, the Vulkan loader and MoltenVK. I
 
 Add `--to-intel` for Intel hosts. The output format defaults to Linux ELF regardless of the filename; `.exe` alone does not select Windows.
 
+Linux output on Apple silicon without Rosetta, through `aps5-fex`, which an arm64 build makes from `3rdparty/FEX` and which translates the title's x86-64 code with FEXCore. It loads the libraries from `libs/` beside the executable:
+
+```sh
+relinker source/input.elf out/app.elf
+build/core/fex/aps5-fex out/app.elf
+```
+
 ## Options
 
 All switches are disabled by default. `unused-filter` defaults to `0`; `--rpath` defaults to `$ORIGIN/libs`.
