@@ -1,6 +1,3 @@
-// A program with its own allocator, registered as games register theirs, in its process parameters:
-// after _init_env, libc's malloc family calls it. Exits 43 when every result is right, otherwise with
-// 100 plus a bit per wrong group.
 extern "C" void _init_env();
 extern "C" void* malloc(unsigned long size);
 extern "C" void free(void* pointer);
@@ -10,7 +7,6 @@ extern "C" void* memalign(unsigned long alignment, unsigned long size);
 extern "C" int posix_memalign(void** pointer, unsigned long alignment, unsigned long size);
 extern "C" [[noreturn]] void exit(int);
 
-// Called through a data pointer, so the executable also has a RELA import, which the relinker needs.
 void (*volatile exitPointer)(int) = exit;
 
 static int failures = 0;
@@ -19,7 +15,6 @@ static void Check(bool right, int bit) {
     if (!right) failures |= 1 << bit;
 }
 
-// A bump allocator over a static arena; each block follows a 16-byte header with its size.
 alignas(4096) static unsigned char arena[32 << 20];
 static unsigned long used = 0;
 static unsigned long calls[7] = {};
@@ -90,7 +85,6 @@ static_assert(sizeof(ProcessParameters) == 0x40, "libc reads its parameters at 0
 
 static const Replacement replacement {0x78, 2, Initialize, Finalize, Allocate, Release, Clear, Resize, Aligned, Realigned, PosixAligned, {}};
 static const LibcParameters libcParameters {0x38, {}, &replacement};
-// fex_toolchain.add_process_parameters puts PT_SCE_PROCPARAM over this.
 [[gnu::used]] static const ProcessParameters processParameters {0x40, 0x4942524f, 0, {}, &libcParameters};
 
 static bool InArena(const void* pointer) {

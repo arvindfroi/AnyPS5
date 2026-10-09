@@ -6,9 +6,6 @@
 #include "SceTypes.hpp"
 
 #if defined(__aarch64__) && defined(__APPLE__)
-// Where guest code runs through FEXCore, its call to a variadic function arrives with the arguments
-// still in a guest list, which the bridge sets for the calling thread just before the call. Returns
-// that list, once, or host when there is none.
 extern "C" VaList* Aps5TakeBridgeVaList_nid_no_patch(VaList* host);
 #endif
 

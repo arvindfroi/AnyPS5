@@ -12,15 +12,12 @@ namespace {
 
 constexpr std::string_view OriginPrefix = "$ORIGIN/";
 constexpr std::string_view GuestSuffix = "#guest";
-// The dynamic linker the relinker names for __tls_get_addr, which the bridge provides instead.
 constexpr std::string_view DynamicLinker = "ld-linux-x86-64.so.2";
 
 std::uint64_t AlignUp(std::uint64_t value, std::uint64_t alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
 
-// libkernel's dlopen and dlsym for the guest modules: all of them are loaded at start, as the
-// executable names them all, so opening one finds it.
 const GuestProgram* loadedProgram = nullptr;
 
 void* OpenGuestModule(const char* path) {
@@ -44,8 +41,6 @@ GuestProgram::GuestProgram(const std::filesystem::path& executable, Bridge& brid
     bridge.Open("libc.prx");
     Load(std::filesystem::absolute(executable), bridge);
 
-    // Variant II static TLS, as the dynamic linker lays it out: the executable's block directly below
-    // the thread pointer, and each module's below the one before.
     std::vector<std::uint64_t> offsets {0};
     std::uint64_t offset = 0;
     for (std::size_t index = 0; index < images.size(); ++index) {
@@ -96,7 +91,6 @@ void GuestProgram::Load(const std::filesystem::path& path, Bridge& bridge) {
 }
 
 std::vector<std::uint64_t> GuestProgram::Initializers() const {
-    // The executable names every module, dependencies first, which is the order they load in after it.
     std::vector<std::uint64_t> functions;
     for (std::size_t index = 1; index < images.size(); ++index) {
         const auto initializers = images[index]->Initializers();

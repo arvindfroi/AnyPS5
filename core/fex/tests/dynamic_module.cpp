@@ -1,10 +1,7 @@
-// Loads a guest module at run time, as a game does with sceKernelLoadStartModule, and calls a
-// function it finds with sceKernelDlsym. Exits 43 when the module's TLS and initializer are right.
 extern "C" int sceKernelLoadStartModule(const char* path, unsigned long args, const void* argp, unsigned flags, const void* option, int* result);
 extern "C" int sceKernelDlsym(int module, const char* name, void** address);
 extern "C" [[noreturn]] void exit(int);
 
-// Called through a data pointer, so the executable also has a RELA import, which the relinker needs.
 int (*volatile loadStartModule)(const char*, unsigned long, const void*, unsigned, const void*, int*) = sceKernelLoadStartModule;
 
 extern "C" [[noreturn]] void _start(void*) {

@@ -31,7 +31,6 @@ _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _U
     if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
         return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
 #if defined(__APPLE__) && defined(__aarch64__)
-    // Under FEXCore a guest's own personality, or the stub of an imported one, runs as guest code.
     using Personality = _Unwind_Reason_Code (*)(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
     if (personality != 0 && LibcGuestBridged())
         return reinterpret_cast<Personality>(personality)(1, actions, exception->exception_class, exception, context);

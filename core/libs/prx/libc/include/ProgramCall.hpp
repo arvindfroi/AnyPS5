@@ -16,9 +16,6 @@ std::uint64_t ProgramCallInteger(TValue value) {
     else return static_cast<std::uint64_t>(value);
 }
 
-// Calls a function the program gave libc, such as an allocator it registered or a qsort comparator.
-// Under FEXCore that is guest code, which a host call reaches only through a fault that costs
-// microseconds, so the call goes through the bridge instead.
 template <typename TFunction, typename... TArguments>
 std::invoke_result_t<TFunction, TArguments...> CallProgram(TFunction function, TArguments... arguments) {
     using Result = std::invoke_result_t<TFunction, TArguments...>;

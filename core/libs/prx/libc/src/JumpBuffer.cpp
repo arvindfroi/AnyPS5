@@ -40,9 +40,6 @@ asm(".text\n"
     "    fldcw 68(%rdi)\n"
     "    jmp *0(%rdi)\n");
 #elif defined(__APPLE__) && defined(__aarch64__)
-// Under FEXCore the frame to save and resume is the guest's: the runner captures the registers of the
-// guest frame that called, and restoring registers continues the guest there. The saved state is the
-// same as on x86-64.
 extern "C" void LibcCaptureRegisters(std::uintptr_t* registers);
 extern "C" [[noreturn]] void LibcRestoreRegisters(const std::uintptr_t* registers);
 extern "C" void LibcGuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw);
@@ -57,7 +54,6 @@ struct JumpBuffer {
 static_assert(offsetof(JumpBuffer, mxcsr) == 64 && offsetof(JumpBuffer, fcw) == 68);
 constexpr std::size_t JumpBufferBytes = 70;
 
-// The captured registers in DWARF order: rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15, rip.
 enum Register { Rax = 0, Rbx = 3, Rbp = 6, Rsp = 7, R12 = 12, R13 = 13, R14 = 14, R15 = 15, Rip = 16, Count = 17 };
 
 }
@@ -78,7 +74,6 @@ extern "C" void APS5_VABI longjmp_nid_postfix(void* buffer, int value) {
     std::uint32_t mxcsr = 0;
     std::uint16_t fcw = 0;
     LibcGuestControl(&mxcsr, &fcw);
-    // Setting them in the guest state would not reach FEXCore's rounding mode.
     if (mxcsr != saved.mxcsr || fcw != saved.fcw) NotImplemented_nid_no_patch("longjmp to a different MXCSR or x87 control word");
     std::uintptr_t registers[Count];
     LibcCaptureRegisters(registers);

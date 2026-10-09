@@ -153,8 +153,6 @@ GuestImage::GuestImage(const std::filesystem::path& path) : path(path) {
     }
     for (auto* tag = reinterpret_cast<const DynamicEntry*>(base + dynamic); tag->tag != DT_NULL; ++tag)
         if (tag->tag == DT_NEEDED) needed.emplace_back(reinterpret_cast<const char*>(strings + tag->value));
-    // A module's exports; the relinker gives a module a DT_HASH, whose chain count is its number of
-    // symbols, and an executable exports nothing.
     if (hash != 0 && symbols != 0) {
         const std::uint32_t count = reinterpret_cast<const std::uint32_t*>(hash)[1];
         for (std::uint32_t index = 1; index < count; ++index) {
@@ -168,13 +166,13 @@ GuestImage::GuestImage(const std::filesystem::path& path) : path(path) {
 }
 
 std::optional<std::uint64_t> GuestImage::StartFunction() const {
-    // mov rdi, rsp; and rsp, -16; xor rsi, rsi; call _start; ud2
-    constexpr unsigned char Stub[] = {0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0x48, 0x31, 0xf6, 0xe8};
+    constexpr unsigned char MoveRspToRdiAlignRspClearRsiCall[] = {0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0x48, 0x31, 0xf6, 0xe8};
+    constexpr std::size_t CallTarget = sizeof(MoveRspToRdiAlignRspClearRsiCall);
     const auto* code = reinterpret_cast<const unsigned char*>(entry);
-    if (entry < start || entry + sizeof(Stub) + 6 > start + size || std::memcmp(code, Stub, sizeof(Stub)) != 0) return std::nullopt;
+    if (entry < start || entry + CallTarget + 6 > start + size || std::memcmp(code, MoveRspToRdiAlignRspClearRsiCall, CallTarget) != 0) return std::nullopt;
     std::int32_t displacement;
-    std::memcpy(&displacement, code + sizeof(Stub), sizeof(displacement));
-    return entry + sizeof(Stub) + sizeof(displacement) + displacement;
+    std::memcpy(&displacement, code + CallTarget, sizeof(displacement));
+    return entry + CallTarget + sizeof(displacement) + displacement;
 }
 
 std::optional<GuestSymbol> GuestImage::Export(const std::string& name) const {

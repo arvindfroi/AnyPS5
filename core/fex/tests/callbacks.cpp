@@ -1,13 +1,9 @@
-// libc's qsort and bsearch calling the program's comparators: integers, strings through a comparator
-// that calls back into libc, and doubles, whose comparator uses vector registers. Exits 43 when every
-// result is right, otherwise with 100 plus a bit per wrong group.
 extern "C" void qsort(void* base, unsigned long count, unsigned long size, int (*compare)(const void*, const void*));
 extern "C" void* bsearch(const void* key, const void* base, unsigned long count, unsigned long size,
                          int (*compare)(const void*, const void*));
 extern "C" int strcmp(const char* left, const char* right);
 extern "C" [[noreturn]] void exit(int);
 
-// Called through a data pointer, so the executable also has a RELA import, which the relinker needs.
 void (*volatile exitPointer)(int) = exit;
 
 static int failures = 0;
@@ -25,7 +21,6 @@ static int CompareNames(const void* left, const void* right) {
     return strcmp(*static_cast<const char* const*>(left), *static_cast<const char* const*>(right));
 }
 
-// Sorts in descending order of the square root, so the comparator itself computes with doubles.
 static int CompareRoots(const void* left, const void* right) {
     const double a = __builtin_sqrt(*static_cast<const double*>(left)), b = __builtin_sqrt(*static_cast<const double*>(right));
     return a > b ? -1 : a < b;
@@ -39,7 +34,7 @@ static void Integers() {
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
-        value = x & ~1u;  // even, so an odd key is never there
+        value = x & ~1u;
     }
     const unsigned first = values[0], last = values[1999];
     qsort(values, 2000, sizeof(values[0]), CompareIntegers);

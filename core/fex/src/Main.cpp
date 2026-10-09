@@ -1,7 +1,3 @@
-// Runs a relinked PS5 executable (the relinker's Linux output) on arm64 macOS: FEXCore translates
-// the guest's x86-64 code, and its imports call the HLE libraries in libs/ next to it natively.
-//
-//     aps5-fex <executable> [arguments...]
 
 #include "Bridge.hpp"
 #include "GuestCpu.hpp"
@@ -23,8 +19,6 @@ using namespace Aps5Fex;
 
 constexpr std::size_t GuestStackSize = std::size_t {8} << 20;
 
-// A stack whose top holds argc, the argument pointers, an empty environment and an empty auxiliary
-// vector, which is what the entry stub hands the guest's _start.
 std::uint64_t CreateProcessStack(const std::vector<std::string>& arguments) {
     void* memory = mmap(nullptr, GuestStackSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (memory == MAP_FAILED) throw std::runtime_error("cannot allocate the guest stack");

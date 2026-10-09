@@ -1,12 +1,7 @@
-// SSE floating point as x86 defines it where arm64 differs, which game math relies on: min and max
-// with NaN and signed zeros, out-of-range conversions, the default NaN and NaN propagation, the MXCSR
-// rounding modes, and flush-to-zero and denormals-are-zero as separate controls. Exits 43 when every
-// result is right, otherwise with 100 plus a bit per wrong group.
 #include <immintrin.h>
 
 extern "C" [[noreturn]] void exit(int);
 
-// Called through a data pointer, so the executable also has a RELA import, which the relinker needs.
 void (*volatile exitPointer)(int) = exit;
 
 static int failures = 0;
@@ -36,7 +31,6 @@ static __m128 Single(unsigned bits) {
 
 constexpr unsigned One = 0x3F800000, QuietNan = 0x7FC00000, PositiveZero = 0, NegativeZero = 0x80000000;
 
-// minss, maxss and their packed forms give the second operand when either is NaN or both are zero.
 static void MinimumMaximum() {
     Check(Bits(_mm_min_ss(Single(QuietNan), Single(One))) == One && Bits(_mm_min_ss(Single(One), Single(QuietNan))) == QuietNan, 0);
     Check(Bits(_mm_max_ss(Single(QuietNan), Single(One))) == One && Bits(_mm_max_ss(Single(One), Single(QuietNan))) == QuietNan, 0);
@@ -47,7 +41,6 @@ static void MinimumMaximum() {
           0);
 }
 
-// NaN and out-of-range values convert to the integer indefinite value, not a saturated one.
 static void Conversions() {
     Check(_mm_cvttss_si32(Single(QuietNan)) == static_cast<int>(0x80000000u) && _mm_cvttss_si32(Opaque(_mm_set_ss(3e9f))) == static_cast<int>(0x80000000u) &&
               _mm_cvttss_si32(Opaque(_mm_set_ss(-3e9f))) == static_cast<int>(0x80000000u),
@@ -59,13 +52,11 @@ static void Conversions() {
     Check(_mm_cvtss_si32(Opaque(_mm_set_ss(2.5f))) == 2 && _mm_cvtss_si32(Opaque(_mm_set_ss(3.5f))) == 4, 1);
 }
 
-// An invalid operation gives the negative quiet NaN; a NaN operand keeps its payload, quieted.
 static void Nans() {
     Check(Bits(_mm_mul_ss(Single(PositiveZero), Single(0x7F800000))) == 0xFFC00000 && Bits(_mm_sqrt_ss(Single(0xBF800000))) == 0xFFC00000, 2);
     Check(Bits(_mm_add_ss(Single(0x7FC12345), Single(One))) == 0x7FC12345 && Bits(_mm_add_ss(Single(One), Single(0x7F800001))) == 0x7FC00001, 2);
 }
 
-// The rounding control in MXCSR reaches conversions, arithmetic and roundss with the current direction.
 static void Rounding(unsigned control) {
     const float a = 2.7f, b = -2.5f, c = 2.2f, d = -2.7f;
     _mm_setcsr((control & ~0x6000u) | 0x2000u);
@@ -81,10 +72,9 @@ static void Rounding(unsigned control) {
     Check(_mm_cvtss_si32(Opaque(_mm_set_ss(a))) == 3, 3);
 }
 
-// Flush-to-zero flushes results and denormals-are-zero flushes operands, each on its own.
 static void Denormals(unsigned control) {
-    const auto scaled = [] { return Bits(_mm_mul_ss(Single(0x00400000), Single(0x71800000))); };   // denormal * 2^100
-    const auto halved = [] { return Bits(_mm_mul_ss(Single(0x00800000), Single(0x3F000000))); };   // 2^-126 * 0.5
+    const auto scaled = [] { return Bits(_mm_mul_ss(Single(0x00400000), Single(0x71800000))); };
+    const auto halved = [] { return Bits(_mm_mul_ss(Single(0x00800000), Single(0x3F000000))); };
     Check(scaled() == 0x32000000 && halved() == 0x00400000, 4);
     _mm_setcsr(control | 0x8000u);
     Check(scaled() == 0x32000000 && halved() == 0, 4);

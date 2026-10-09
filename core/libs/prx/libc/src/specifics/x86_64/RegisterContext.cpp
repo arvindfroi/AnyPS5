@@ -98,9 +98,6 @@ asm(
 "movq 104(%r10),%r13\nmovq 112(%r10),%r14\nmovq 120(%r10),%r15\njmp *%r11\n"
 );
 #elif defined(__APPLE__) && defined(__aarch64__)
-// Under FEXCore the registers are the guest's. The runner captures those of the guest frame whose
-// call reached this library, which is the frame the other hosts reach by stepping out of their own,
-// and restoring registers continues the guest there.
 namespace {
 void (*bridgeCapture)(std::uintptr_t*) = nullptr;
 void (*bridgeRestore)(const std::uintptr_t*) = nullptr;
@@ -112,7 +109,6 @@ extern "C" void Aps5SetBridgeGuestCall_nid_no_patch(std::uint64_t (*call)(std::u
     bridgeGuestCall = call;
 }
 
-// Calls a function the guest gave libc with six integer arguments, for CallProgram.
 std::uint64_t LibcCallGuest(const void* function, const std::uint64_t* arguments) {
     if (bridgeGuestCall == nullptr) std::abort();
     return bridgeGuestCall(reinterpret_cast<std::uint64_t>(function), arguments);
@@ -122,7 +118,6 @@ extern "C" void Aps5SetBridgeControl_nid_no_patch(void (*control)(std::uint32_t*
     bridgeControl = control;
 }
 
-// The guest's MXCSR and x87 control word, for setjmp and longjmp.
 extern "C" void LibcGuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw) {
     if (bridgeControl == nullptr) std::abort();
     bridgeControl(mxcsr, fcw);
@@ -143,7 +138,6 @@ void LibcCaptureRegisters(std::uintptr_t* registers) {
     std::abort();
 }
 
-// Whether the guest runs through FEXCore, whose runner set the hooks.
 bool LibcGuestBridged() {
     return bridgeCapture != nullptr;
 }
@@ -152,7 +146,6 @@ void LibcCaptureRegisters(std::uintptr_t*) { std::abort(); }
 [[noreturn]] void LibcRestoreRegisters(const std::uintptr_t*) { std::abort(); }
 #endif
 
-// Whether LibcCaptureRegisters gives the frame that called into the library rather than its own.
 #if defined(__APPLE__) && defined(__aarch64__)
 constexpr bool LibcCapturesCaller = true;
 #else

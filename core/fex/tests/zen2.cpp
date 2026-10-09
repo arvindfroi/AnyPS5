@@ -1,6 +1,3 @@
-// Code built for the PS5's CPU, Zen 2, as games are: AVX2, FMA, BMI1, BMI2, LZCNT, POPCNT, F16C, RDTSCP
-// and RDPID, with the CPUID and XGETBV checks that libraries make before using them. Exits 43 when every result
-// is right, otherwise with 100 plus the number of the first wrong check.
 #include <cpuid.h>
 #include <immintrin.h>
 
@@ -14,7 +11,6 @@ static void Check(bool right, int bit) {
     if (!right) failures |= 1 << bit;
 }
 
-// Keeps the compiler from computing a result while compiling.
 template <typename T>
 static T Opaque(T value) {
     asm volatile("" : "+m"(value));
@@ -37,8 +33,8 @@ static void Features() {
     const unsigned leaf7 = bit_BMI | bit_AVX2 | bit_BMI2;
     Check((b & leaf7) == leaf7, 0);
     __cpuid(0x80000001, a, b, c, d);
-    Check((c & bit_LZCNT) != 0 && (d & (1u << 27)) != 0, 0);  // RDTSCP
-    // The operating system saves the SSE and AVX state.
+    constexpr unsigned Rdtscp = 1u << 27;
+    Check((c & bit_LZCNT) != 0 && (d & Rdtscp) != 0, 0);
     Check((_xgetbv(0) & 6) == 6, 1);
 }
 
@@ -53,7 +49,6 @@ static void Integers() {
                        _mm256_permutevar8x32_epi32(counting, Opaque(_mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0))));
     Check(Lanes(lanes, {7, 6, 5, 4, 3, 2, 1, 0}), 3);
 
-    // Counts of 32 and more give zero.
     _mm256_store_si256(reinterpret_cast<__m256i*>(lanes),
                        _mm256_sllv_epi32(Opaque(_mm256_set1_epi32(1)), Opaque(_mm256_setr_epi32(0, 1, 2, 3, 31, 32, 33, 4))));
     Check(Lanes(lanes, {1, 2, 4, 8, static_cast<int>(0x80000000u), 0, 0, 16}), 3);
@@ -61,7 +56,6 @@ static void Integers() {
                        _mm256_srav_epi32(Opaque(_mm256_set1_epi32(-64)), Opaque(_mm256_setr_epi32(0, 1, 2, 3, 6, 7, 40, 31))));
     Check(Lanes(lanes, {-64, -32, -16, -8, -1, -1, -1, -1}), 3);
 
-    // vpshufb shuffles within each 128-bit half.
     alignas(32) unsigned char bytes[32];
     for (int i = 0; i < 32; ++i) bytes[i] = static_cast<unsigned char>(i);
     const __m256i shuffled = _mm256_shuffle_epi8(_mm256_load_si256(reinterpret_cast<const __m256i*>(bytes)), Opaque(_mm256_set1_epi8(15)));
@@ -79,7 +73,6 @@ static void Gathers() {
     const __m256i index = Opaque(_mm256_setr_epi32(15, 0, 3, 7, 1, 1, 8, 12));
     _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), _mm256_i32gather_epi32(table, index, 4));
     Check(Lanes(lanes, {225, 0, 9, 49, 1, 1, 64, 144}), 5);
-    // Lanes whose mask is clear keep the source and read nothing.
     const __m256i mask = Opaque(_mm256_setr_epi32(-1, 0, -1, 0, -1, 0, -1, 0));
     const __m256i wild = Opaque(_mm256_setr_epi32(15, 1 << 28, 3, 1 << 28, 1, 1 << 28, 8, 1 << 28));
     _mm256_store_si256(reinterpret_cast<__m256i*>(lanes), _mm256_mask_i32gather_epi32(_mm256_set1_epi32(-5), table, wild, mask, 4));
@@ -87,7 +80,6 @@ static void Gathers() {
 }
 
 static void FusedMultiplyAdd() {
-    // (1 + 2^-12)^2 - (1 + 2^-11) is 2^-24, which only a single rounding keeps.
     alignas(32) float singles[8];
     const __m256 a = Opaque(_mm256_set1_ps(1.0f + 0x1p-12f));
     _mm256_store_ps(singles, _mm256_fmadd_ps(a, a, Opaque(_mm256_set1_ps(-(1.0f + 0x1p-11f)))));
@@ -113,7 +105,6 @@ static void Bits() {
     Check(_tzcnt_u64(Opaque(0x80ull)) == 7 && _tzcnt_u64(Opaque(0ull)) == 64, 8);
     Check(_lzcnt_u64(Opaque(1ull)) == 63 && _lzcnt_u64(Opaque(0ull)) == 64, 8);
     Check(_mm_popcnt_u64(Opaque(0xF0F0F0F0F0F0F0F0ull)) == 32, 8);
-    // The compiler's own shifts for -march=znver2: shlx and sarx take the count from any register.
     long long value = Opaque(-1024ll);
     unsigned count = Opaque(3u);
     Check((value >> count) == -128 && (static_cast<unsigned long long>(value) << count) == 0xFFFFFFFFFFFFE000ull, 8);
@@ -144,10 +135,8 @@ static void Conversions() {
     Check(Lanes(sums, {0.0f, 2.0f, 0.0f, 4.0f, 0.0f, 6.0f, 0.0f, 8.0f}), 10);
 }
 
-// Called through a data pointer, so the executable also has a RELA import, which the relinker needs.
 void* (*volatile mapPointer)(void*, unsigned long, int, int, int, long) = mmap;
 
-// Double to int32 conversions, in their SSE and AVX forms, keep the bits above 2^24.
 static void DoublesToIntegers() {
     alignas(16) int lanes[4];
     __m128i converted;
@@ -163,7 +152,6 @@ static void DoublesToIntegers() {
     Check(lanes[0] == 16777217 && lanes[1] == 16777219 && lanes[2] == -16777221 && lanes[3] == static_cast<int>(0x80000000u), 13);
 }
 
-// A masked load whose cleared lanes lie in an unmapped page must not fault there.
 static void MaskedLoads() {
     constexpr unsigned long page = 16384;
     auto* pages = static_cast<unsigned char*>(mapPointer(nullptr, 2 * page, 3, 0x1002, -1, 0));
@@ -181,7 +169,6 @@ static void MaskedLoads() {
     munmap(pages, page);
 }
 
-// The time stamp counter counts up, and rdtscp and rdpid give a processor number.
 static void TimeStamps() {
     const unsigned long long first = __rdtsc();
     unsigned long long later = first;
@@ -195,7 +182,6 @@ static void TimeStamps() {
     Check(identifier < 4096, 14);
 }
 
-// What the compiler makes of a plain loop with -march=znver2.
 static void Vectorized() {
     static int values[1000];
     for (int i = 0; i < 1000; ++i) values[i] = Opaque(i) * 3;

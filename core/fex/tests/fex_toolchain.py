@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../relinker/relinker/tests/macos"))
-from nid import nid  # noqa: E402
+from nid import nid
 
 TARGET = "--target=x86_64-unknown-freebsd13"
 
@@ -33,7 +33,6 @@ def linker():
         return [lld], None
     rustup = pathlib.Path.home() / ".rustup" / "toolchains"
     for candidate in sorted(rustup.glob("*/lib/rustlib/*/bin/rust-lld")):
-        # rust-lld looks for the toolchain's libLLVM next to its own directory.
         toolchain = candidate.parents[4]
         return [str(candidate), "-flavor", "gnu"], {**os.environ, "DYLD_LIBRARY_PATH": str(toolchain / "lib")}
     return None, None

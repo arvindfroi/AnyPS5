@@ -10,8 +10,6 @@ import pathlib
 import re
 import sys
 
-# A definition: the text before the name on its line, the name, and its parameter list, which can hold
-# one level of parentheses for a function pointer.
 DEFINITION = re.compile(r"^([^\n;{}]*?)\b(\w+_nid_postfix)\s*\(([^;{}()]*(?:\([^()]*\)[^;{}()]*)*)\)\s*(?:noexcept\s*)?\{", re.M)
 LONG_DOUBLE = re.compile(r"\blong double\b|\bGuestLongDouble\b")
 

@@ -29,8 +29,6 @@ void Error(const char* message) {
     pendingError = true;
 }
 #if defined(__APPLE__) && defined(__aarch64__)
-// Under FEXCore the guest modules are ELF images the runner loaded, which dyld cannot open: the runner
-// opens them by path and finds their symbols.
 void* (*guestOpen)(const char* path) = nullptr;
 void* (*guestSymbol)(void* image, const char* name) = nullptr;
 #endif

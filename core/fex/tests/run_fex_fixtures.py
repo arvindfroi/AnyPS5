@@ -11,11 +11,10 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import fex_fixtures  # noqa: E402
-import fex_toolchain  # noqa: E402
+import fex_fixtures
+import fex_toolchain
 
 MACOS = pathlib.Path(__file__).resolve().parents[2] / "relinker" / "relinker" / "tests" / "macos"
-# Guest programs that only these tests use.
 HERE = pathlib.Path(__file__).resolve().parent
 
 EXPECTED = {
@@ -99,7 +98,6 @@ def compiled_modules(directory, modules, main, libraries):
     fex_toolchain.make_header_room(staged / "eboot.elf")
 
 
-# The C++ programs: their builder and the exit status they report.
 COMPILED = {
     "exception": (lambda d: compiled_executable(d, ["exception.cpp"], None), 43),
     "c-cleanup": (lambda d: compiled_executable(d, ["c_cleanup.c", "c_cleanup_main.cpp"], None), 47),
@@ -145,7 +143,6 @@ def main():
         with tempfile.TemporaryDirectory(prefix=f"aps5-fex-{name}-") as directory:
             directory = pathlib.Path(directory)
             build(directory)
-            # A program with guest modules is staged in input/ with its sce_module directory.
             modules = (directory / "input" / "sce_module").exists()
             source = "input/eboot.elf" if modules else "input.elf"
             relinked = subprocess.run([str(relinker), *([] if modules else ["--skip-sce-module"]), source, "eboot.elf"],

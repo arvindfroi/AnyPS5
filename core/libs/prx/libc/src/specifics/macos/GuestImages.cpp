@@ -15,7 +15,6 @@ constexpr std::size_t LoadBiasOffset = 0x08;
 constexpr std::size_t HeaderCountOffset = 0x58;
 constexpr std::size_t HeadersOffset = 0x60;
 
-// Guest images that dyld did not load, such as the executable FEXCore runs.
 std::mutex registeredMutex;
 std::vector<dl_phdr_info> registered;
 

@@ -1,5 +1,3 @@
-// Two fibers switch between each other and back to the thread, twice; each switch carries a value.
-// Exits 43 when the order and every value are right, otherwise with a bit per wrong one.
 extern "C" int _sceFiberInitializeImpl(void* fiber, const char* name, void (*entry)(unsigned long, unsigned long), unsigned long argument,
                                        void* context, unsigned long size, const void* option, unsigned version);
 extern "C" int sceFiberRun(void* fiber, unsigned long argument, unsigned long* returned);
@@ -37,7 +35,6 @@ static void runSecond(unsigned long initial, unsigned long run) {
     failures |= 64;
 }
 
-// Called through a data pointer, so the executable also has a RELA import, which the relinker needs.
 int (*volatile runPointer)(void*, unsigned long, unsigned long*) = sceFiberRun;
 
 extern "C" [[noreturn]] void _start(void*) {

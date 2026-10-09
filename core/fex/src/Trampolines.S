@@ -1,9 +1,5 @@
     .text
 
-// void Aps5NativeCall(const void* target, const Aps5NativeArguments* arguments, Aps5NativeResult* result)
-//
-// Calls target with the AAPCS64 argument registers and stack slots in arguments, and stores the
-// result registers in result. The layouts are in Bridge.cpp.
     .globl _Aps5NativeCall
     .p2align 2
 _Aps5NativeCall:
@@ -51,9 +47,6 @@ _Aps5NativeCall:
     ret
     .cfi_endproc
 
-// Entered in place of a guest function that host code called, with the guest function's address in
-// x16 and the call's arguments and return address untouched. Aps5RunGuestCall runs the guest function
-// on its arguments and leaves its result registers where they were saved.
     .globl _Aps5GuestCallEntry
     .p2align 2
 _Aps5GuestCallEntry:

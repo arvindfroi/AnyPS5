@@ -46,9 +46,6 @@ enum class FiberState : std::uint32_t {
 };
 
 #if defined(__APPLE__) && defined(__aarch64__)
-// Under FEXCore a fiber's context is guest state rather than a host stack: the guest registers of the
-// frame that switched away, as just after its call returns, and where the call that resumes it writes
-// the value it was resumed with.
 struct GuestContext {
     std::uint64_t rbx, rbp, rsp, r12, r13, r14, r15, rip;
     std::uint64_t* transfer;
@@ -302,7 +299,6 @@ extern "C" [[noreturn]] void Aps5FiberMain_nid_no_patch(Fiber* fiber) {
 
 static void PrepareInitialStack(Fiber* fiber) {
 #if defined(__APPLE__) && defined(__aarch64__)
-    // A fiber that has not started has no saved guest frame yet.
     fiber->guest = {};
     return;
 #endif
@@ -357,13 +353,9 @@ static void Resume(Fiber* target, void** save, std::uint64_t argOnRun) {
 #if defined(__APPLE__) && defined(__aarch64__)
 namespace {
 
-// The runner's view of the guest: the registers of the guest frame whose call reached this library
-// (in DWARF order: rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15, rip), continuing the guest with
-// a full set of them, and the guest's MXCSR and x87 control word.
 void (*bridgeCapture)(std::uintptr_t*) = nullptr;
 void (*bridgeResume)(const std::uintptr_t*) = nullptr;
 void (*bridgeControl)(std::uint32_t*, std::uint16_t*) = nullptr;
-// Where a fiber's entry function returns to: a trap that ends the process.
 std::uint64_t entryReturned = 0;
 
 enum GuestRegister { Rax = 0, Rbx = 3, Rsi = 4, Rdi = 5, Rbp = 6, Rsp = 7, R12 = 12, R13 = 13, R14 = 14, R15 = 15, Rip = 16, GuestRegisters = 17 };
@@ -381,12 +373,10 @@ void Save(GuestContext& context, std::uint64_t* transfer) {
     bridgeControl(&context.mxcsr, &context.fcw);
 }
 
-// Continues the guest in the frame context saved, whose call returns SCE_OK.
 [[noreturn]] void Continue(const GuestContext& context, std::uint64_t transfer) {
     std::uint32_t mxcsr = 0;
     std::uint16_t fcw = 0;
     bridgeControl(&mxcsr, &fcw);
-    // Setting them in the guest state would not reach FEXCore's rounding mode.
     if (mxcsr != context.mxcsr || fcw != context.fcw) NotImplemented_nid_no_patch("sceFiber switching to a different MXCSR or x87 control word");
     if (context.transfer) *context.transfer = transfer;
     std::uintptr_t registers[GuestRegisters];
@@ -404,8 +394,6 @@ void Save(GuestContext& context, std::uint64_t* transfer) {
     std::abort();
 }
 
-// Runs target, which AcquireForResume made Running: from its entry on its own stack, as after a call
-// that returns to the trap, or in the frame it saved.
 [[noreturn]] void Enter(Fiber* target, std::uint64_t argOnRun) {
     ThreadState().current = target;
     ThreadState().transfer = argOnRun;

@@ -35,8 +35,6 @@ namespace Aps5Fex {
 
 namespace {
 
-// macOS refuses memory that is writable and executable at once, so FEXCore writes its code through
-// a writable alias of an executable pool.
 constexpr std::size_t PoolSize = std::size_t {1} << 30;
 std::uint8_t* poolCode = nullptr;
 std::atomic<std::size_t> poolUsed {0};
@@ -98,7 +96,6 @@ FEXCore::HostFeatures HostFeatures() {
     features.SupportsECV = HasFeature("FEAT_ECV");
     features.SupportsWFXT = HasFeature("FEAT_WFxT");
     features.SupportsMOPS = HasFeature("FEAT_MOPS");
-    // AVX runs as pairs of 128-bit operations without SVE.
     features.SupportsAVX = true;
     features.SupportsAES256 = features.SupportsAES;
     return features;
@@ -122,7 +119,6 @@ struct GuestCode {
 
 GuestCode guestCode {};
 
-// The guest image or stubs at address, as [start, end).
 std::optional<std::pair<std::uint64_t, std::uint64_t>> GuestCodeRange(std::uint64_t address) {
     if (guestCode.bridge == nullptr) return std::nullopt;
     if (guestCode.bridge->OwnsStub(address)) return std::pair {guestCode.bridge->StubBase(), guestCode.bridge->StubBase() + guestCode.bridge->StubSize()};
@@ -138,7 +134,6 @@ bool IsGuestCode(std::uint64_t address) {
 class BridgeSyscalls final : public FEXCore::HLE::SyscallHandler {
 public:
     explicit BridgeSyscalls(Bridge& bridge) : bridge(bridge) {
-        // The Linux ABI hands the handler rax and rdi as its first arguments.
         OSABI = FEXCore::HLE::SyscallOSABI::OS_LINUX64;
     }
 
@@ -187,8 +182,6 @@ constexpr std::size_t ThreadStackSize = std::size_t {8} << 20;
 
 std::mutex threadsMutex;
 
-// A thread's thread pointer: the images' TLS blocks below a control block whose first word points at
-// itself and whose word at 0x28 is the stack guard, as the guest's code expects from FS.
 std::uint8_t* CreateThreadPointer(const GuestTlsLayout& tls, void** allocation) {
     constexpr std::size_t ControlBlock = 0x100;
     const std::size_t alignment = std::max<std::size_t>(tls.alignment, 64);
@@ -206,17 +199,13 @@ std::uint8_t* CreateThreadPointer(const GuestTlsLayout& tls, void** allocation) 
     return pointer;
 }
 
-// The guest state of one host thread and the memory it uses.
 class GuestThread {
 public:
-    // A stack of 0 bytes means the guest's code brings its own.
     GuestThread(std::uint64_t rip, std::uint64_t rsp, std::size_t stackSize) {
         if (stackSize != 0) {
             stack = mmap(nullptr, stackSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
             if (stack == MAP_FAILED) throw std::runtime_error("cannot allocate a guest thread stack");
             this->stackSize = stackSize;
-            // The bridge reads a call's stack argument slots whether the call has them or not, so the
-            // stack starts a page below its top.
             rsp = reinterpret_cast<std::uint64_t>(stack) + stackSize - Page;
         }
         const std::uint64_t fs = reinterpret_cast<std::uint64_t>(CreateThreadPointer(*guestCode.tls, &tls));
@@ -231,10 +220,8 @@ public:
         auto& guest = thread->CurrentFrame->State;
         guest.callret_sp = reinterpret_cast<std::uint64_t>(thread->CallRetStackBase) + ThreadState::CALLRET_DEFAULT_OFFSET;
         guest.callret_sp_base = reinterpret_cast<std::uint64_t>(thread->CallRetStackBase);
-        // ExecuteThread sets it for a thread that starts in guest code.
         thread->CurrentFrame->Pointers.ThunkCallbackRet = guestCode.bridge->CallbackReturn();
 
-        // A flat 64-bit code segment, as a Linux process has.
         guest.segment_arrays[CPUState::SEGMENT_ARRAY_INDEX_GDT] = gdt;
         guest.segment_arrays[CPUState::SEGMENT_ARRAY_INDEX_LDT] = gdt;
         guest.cs_idx = CPUState::DEFAULT_USER_CS << 3;
@@ -272,11 +259,8 @@ private:
 };
 
 thread_local ThreadState* currentThread = nullptr;
-// How many guest calls the thread is in.
 thread_local unsigned guestDepth = 0;
 
-// The guest state of a thread that got it when it first called guest code. A thread that ends inside
-// guest code, which is how exit() ends the process, leaves it alone.
 struct AdoptedThread {
     std::unique_ptr<GuestThread> thread;
 
@@ -301,8 +285,6 @@ ThreadState* CurrentThread() {
 
 extern "C" void Aps5GuestCallEntry();
 
-// The registers a host call to a guest function was made with, as Aps5GuestCallEntry saves them;
-// the result registers replace the first ones.
 struct Aps5GuestCallFrame {
     std::uint64_t gpr[8];
     std::uint8_t vector[8][16];
@@ -312,8 +294,6 @@ namespace Aps5Fex {
 
 namespace {
 
-// Runs the guest function at target on the arguments in frame, on a thread's guest state, which may
-// be in the middle of the bridge call that led here, and leaves its result registers in frame.
 void CallGuest(ThreadState* thread, std::uint64_t target, Aps5GuestCallFrame* frame) {
     using namespace FEXCore::X86State;
     auto& state = thread->CurrentFrame->State;
@@ -323,8 +303,6 @@ void CallGuest(ThreadState* thread, std::uint64_t target, Aps5GuestCallFrame* fr
     std::uint64_t xmm[16][2];
     std::memcpy(xmm, state.xmm.sse.data, sizeof(xmm));
 
-    // The seventh and eighth integer arguments go on the guest stack, above the return address the
-    // callback adds, with the stack aligned as after a call.
     const std::uint64_t top = ((state.gregs[REG_RSP] - 32) & ~std::uint64_t {15}) + 8;
     std::memcpy(reinterpret_cast<void*>(top - 8), &frame->gpr[6], 16);
     state.gregs[REG_RSP] = top;
@@ -351,7 +329,6 @@ void CallGuest(ThreadState* thread, std::uint64_t target, Aps5GuestCallFrame* fr
 
 }
 
-// Runs the guest function that host code called, on the calling thread's guest state.
 extern "C" void Aps5RunGuestCall(std::uint64_t target, Aps5GuestCallFrame* frame) {
     Aps5Fex::CallGuest(Aps5Fex::CurrentThread(), target, frame);
 }
@@ -371,12 +348,8 @@ namespace Aps5Fex {
 
 namespace {
 
-// The handlers that were there before the runner's, for the faults that are not its own.
 struct sigaction previousBus {}, previousSegv {};
 
-// Guest code is never host executable, so a host call to a guest function faults on its first
-// instruction; the call continues in Aps5GuestCallEntry instead. Any other fault goes to the handler
-// that was installed before, or, without one, ends the process as it would have.
 void OnFault(int signal, siginfo_t* info, void* context) {
     auto* machine = static_cast<ucontext_t*>(context)->uc_mcontext;
     const std::uint64_t pc = arm_thread_state64_get_pc(machine->__ss);
@@ -419,7 +392,6 @@ GuestCpu::GuestCpu(Bridge& bridge, const GuestProgram& program) {
     FEXCore::Config::Initialize();
     FEXCore::Config::Load();
     FEXCore::Config::ReloadMetaLayer();
-    // After the reload, which rebuilds the layer this sets.
     FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
 
     state.reset(new State {BridgeSyscalls(bridge), CallbackReturns(bridge), FEXCore::Context::Context::CreateNewContext(HostFeatures())});
@@ -444,7 +416,6 @@ struct ProgramStart {
 
 ProgramStart programStart;
 
-// The native entry Aps5StartGuest calls on the guest's thread, which gets its guest state here.
 void StartProgram(void* block, void*) {
     ThreadState* thread = CurrentThread();
     for (const std::uint64_t initializer : programStart.initializers) {

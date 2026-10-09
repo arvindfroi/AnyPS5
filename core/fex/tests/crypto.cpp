@@ -1,12 +1,7 @@
-// The instructions games use for checksums, hashing, decryption and string scanning, which the PS5's
-// CPU has: SSE4.2 crc32 and string comparisons, AES-NI and carry-less multiplication, each against
-// published or independently computed values. Exits 43 when every result is right, otherwise with 100
-// plus a bit per wrong group.
 #include <immintrin.h>
 
 extern "C" [[noreturn]] void exit(int);
 
-// Called through a data pointer, so the executable also has a RELA import, which the relinker needs.
 void (*volatile exitPointer)(int) = exit;
 
 static int failures = 0;
@@ -27,7 +22,6 @@ static bool Same(const void* a, const void* b, int size) {
     return true;
 }
 
-// CRC-32C of "123456789" is 0xE3069283, byte by byte and eight bytes at a time.
 static void Checksums() {
     const unsigned char* text = Opaque(reinterpret_cast<const unsigned char*>("123456789"));
     unsigned crc = ~0u;
@@ -52,7 +46,6 @@ static __m128i ExpandKey(__m128i key) {
     return _mm_xor_si128(key, assist);
 }
 
-// FIPS-197 appendix C.1: AES-128, encrypted and decrypted back.
 static void Aes() {
     alignas(16) unsigned char bytes[16];
     for (int i = 0; i < 16; ++i) bytes[i] = static_cast<unsigned char>(i);
@@ -91,7 +84,6 @@ static void Aes() {
     Check(Same(result, bytes, 16), 1);
 }
 
-// Carry-less products, computed bit by bit in Python.
 static void CarrylessMultiply() {
     alignas(16) unsigned long long lanes[2];
     const __m128i a = Opaque(_mm_set_epi64x(0x0123456789ABCDEFll, static_cast<long long>(0x8000000000000001ull)));
@@ -100,7 +92,6 @@ static void CarrylessMultiply() {
     Check(lanes[0] == 0x4000000000000003ull && lanes[1] == 0x6000000000000001ull, 2);
     _mm_store_si128(reinterpret_cast<__m128i*>(lanes), _mm_clmulepi64_si128(a, b, 0x11));
     Check(lanes[0] == 0x40a0789828c810f0ull && lanes[1] == 0x00e038d8688850b0ull, 2);
-    // Selecting the high half of one and the low half of the other: x * 1 is x.
     _mm_store_si128(reinterpret_cast<__m128i*>(lanes), _mm_clmulepi64_si128(a, Opaque(_mm_set_epi64x(0, 1)), 0x01));
     Check(lanes[0] == 0x0123456789ABCDEFull && lanes[1] == 0, 2);
     _mm_store_si128(reinterpret_cast<__m128i*>(lanes), _mm_clmulepi64_si128(Opaque(_mm_set_epi64x(0, 1)), b, 0x10));
@@ -111,29 +102,23 @@ static __m128i Text(const char* text) {
     return Opaque(_mm_loadu_si128(reinterpret_cast<const __m128i*>(text)));
 }
 
-// The SSE4.2 string comparisons, with implicit and explicit lengths.
 static void Strings() {
     const __m128i haystack = Text("abcdefgxyzabcdef");
     Check(_mm_cmpistri(Text("zyx\0............"), haystack, _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY) == 7, 3);
     Check(_mm_cmpistri(Text("xyz\0............"), haystack, _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED) == 7, 3);
     Check(_mm_cmpistri(Text("AZ\0............."), Text("abc1Defghijklmno"), _SIDD_UBYTE_OPS | _SIDD_CMP_RANGES) == 4, 3);
-    // The haystack ends at its NUL, so the z after it does not count.
     Check(_mm_cmpistri(Text("z\0.............."), Text("ab\0z............"), _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY) == 16, 3);
     Check(_mm_cmpistrz(Text("z\0.............."), Text("ab\0z............"), _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY) == 1, 3);
-    // The last match instead of the first, and the mask of matches.
     Check(_mm_cmpistri(Text("ab\0............."), haystack, _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY | _SIDD_MOST_SIGNIFICANT) == 11, 3);
     alignas(16) unsigned short mask[8];
     _mm_store_si128(reinterpret_cast<__m128i*>(mask), _mm_cmpistrm(Text("ab\0............."), haystack, _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY));
     Check(mask[0] == 0x0C03, 3);
-    // Explicit lengths: only the first 3 bytes of the needle and 9 of the haystack count.
     Check(_mm_cmpestri(Text("gxy............."), 3, haystack, 9, _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ORDERED) == 6, 3);
     Check(_mm_cmpestrc(Text("q..............."), 1, haystack, 16, _SIDD_UBYTE_OPS | _SIDD_CMP_EQUAL_ANY) == 0, 3);
-    // Words instead of bytes.
     const __m128i words = Opaque(_mm_setr_epi16(10, 20, 30, 40, 50, 60, 70, 80));
     Check(_mm_cmpestri(Opaque(_mm_setr_epi16(25, 45, 0, 0, 0, 0, 0, 0)), 2, words, 8, _SIDD_UWORD_OPS | _SIDD_CMP_RANGES) == 2, 3);
 }
 
-// Sums of absolute differences and multiply-adds, which image code uses.
 static void Pixels() {
     alignas(16) unsigned long long sums[2];
     _mm_store_si128(reinterpret_cast<__m128i*>(sums), _mm_sad_epu8(Opaque(_mm_set1_epi8(10)), Opaque(_mm_setr_epi8(0, 20, 10, 10, static_cast<char>(255), 0, 5, 15, 1, 2, 3, 4, 5, 6, 7, 8))));

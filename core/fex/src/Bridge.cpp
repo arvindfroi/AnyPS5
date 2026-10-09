@@ -7,6 +7,7 @@
 #include <FEXCore/Core/X86Enums.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -19,7 +20,6 @@
 #include <string_view>
 #include <sys/mman.h>
 
-// The argument and result registers of a native call, laid out as Trampolines.S reads them.
 struct Aps5NativeArguments {
     std::uint64_t gpr[8];
     std::uint8_t vector[8][16];
@@ -41,19 +41,13 @@ namespace Aps5Fex {
 
 namespace {
 
-// The block the trampoline stores on the guest stack: rdi, rsi, rdx, rcx, r8 and r9, then xmm0 to
-// xmm7, which is the layout of a System V register save area. The results replace rdi and rsi (rax,
-// rdx) and xmm0 and xmm1. The caller's stack arguments follow the block and the stub's return address.
 constexpr std::size_t BlockSize = 0xb8;
 constexpr std::size_t BlockVectors = 0x30;
 
-// The guest stack words after the seventh and eighth integer arguments that are passed on, as an
-// AAPCS64 callee expects them for 8-byte arguments.
 constexpr std::uint64_t StackArgumentSlots = 8;
 
 using namespace FEXCore::X86State;
 
-// The bridge calls in progress on this thread, innermost first.
 struct GuestCall {
     FEXCore::Core::CPUState* state;
     std::uint64_t block;
@@ -62,8 +56,6 @@ struct GuestCall {
 
 thread_local const GuestCall* currentCall = nullptr;
 
-// How many of the size bytes from address can be read: all of them, or the ones before an unmapped
-// page.
 std::size_t ReadableBytes(const void* address, std::size_t size) {
     constexpr std::uintptr_t Page = 0x4000;
     const auto first = reinterpret_cast<std::uintptr_t>(address);
@@ -74,13 +66,9 @@ std::size_t ReadableBytes(const void* address, std::size_t size) {
     return next - first;
 }
 
-// x86-64 registers in DWARF order, rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15 and rip, as
-// libc's unwinder keeps them.
 constexpr std::uint32_t DwarfRegisters[16] = {REG_RAX, REG_RDX, REG_RCX, REG_RBX, REG_RSI, REG_RDI, REG_RBP, REG_RSP,
                                               REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
 
-// The registers of the guest frame whose call reached the library, as just after the call returns:
-// the block holds the argument registers, and the callee-saved ones are untouched in the guest state.
 void CaptureGuestFrame(std::uintptr_t* registers) {
     if (currentCall == nullptr) {
         std::fprintf(stderr, "[aps5-fex] a library unwound outside a guest call\n");
@@ -98,7 +86,6 @@ void CaptureGuestFrame(std::uintptr_t* registers) {
     registers[16] = *reinterpret_cast<const std::uint64_t*>(currentCall->block + BlockSize);
 }
 
-// Thrown through the library's frames to the bridge call, which continues the guest in this frame.
 struct GuestFrame {
     std::uintptr_t registers[17];
 };
@@ -111,8 +98,6 @@ struct GuestFrame {
 
 std::vector<std::uint64_t> tlsOffsets;
 
-// __tls_get_addr for the calling guest thread, whose thread pointer is the FS base of the guest state
-// that made this call.
 void* TlsGetAddr(const std::uint64_t* index) {
     if (currentCall == nullptr || index[0] >= tlsOffsets.size()) {
         std::fprintf(stderr, "[aps5-fex] __tls_get_addr for TLS module %llu\n", static_cast<unsigned long long>(index[0]));
@@ -121,7 +106,6 @@ void* TlsGetAddr(const std::uint64_t* index) {
     return reinterpret_cast<void*>(currentCall->state->fs_cached - tlsOffsets[index[0]] + index[1]);
 }
 
-// The guest's MXCSR and x87 control word, for libc's setjmp and longjmp.
 void GuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw) {
     if (currentCall == nullptr) {
         std::fprintf(stderr, "[aps5-fex] a library read the guest's control words outside a guest call\n");
@@ -131,13 +115,11 @@ void GuestControl(std::uint32_t* mxcsr, std::uint16_t* fcw) {
     *fcw = currentCall->state->FCW;
 }
 
-// Where a fiber's entry function returns to, which it must not.
 void FiberEntryReturned() {
     std::fprintf(stderr, "[aps5-fex] the entry function of a fiber returned\n");
     std::abort();
 }
 
-// The layout libc's dl_iterate_phdr reports.
 struct ImageInfo {
     std::uintptr_t address;
     const char* name;
@@ -145,15 +127,12 @@ struct ImageInfo {
     std::uint16_t programHeaderCount;
 };
 
-// A System V x86-64 va_list.
-#pragma pack(push, 1)
 struct VaList {
     std::uint32_t gpOffset;
     std::uint32_t fpOffset;
     void* overflowArea;
     void* registerSaveArea;
 };
-#pragma pack(pop)
 static_assert(sizeof(VaList) == 24);
 
 struct VariadicExport {
@@ -166,8 +145,6 @@ constexpr std::uint8_t GuestList = 1;
 constexpr std::uint8_t Integers = 2;
 constexpr std::uint8_t Unsupported = 3;
 
-// The libraries' variadic functions by their names before NID patching, and their fixed integer
-// arguments. tests/check_bridge_tables.py checks this and X87Results against the libraries' sources.
 constexpr VariadicExport VariadicExports[] = {
     {"asprintf_nid_postfix", GuestList, 2},
     {"fprintf_nid_postfix", GuestList, 2},
@@ -185,46 +162,57 @@ constexpr VariadicExport VariadicExports[] = {
     {"wprintf_nid_postfix", GuestList, 1},
     {"_open_nid_postfix", Integers, 2},
     {"fcntl_nid_postfix", Integers, 2},
-    // Formats the host's 32-bit wchar_t from the host's arguments.
     {"swprintf_nid_postfix", Unsupported, 3},
 };
 
-// The libraries' functions that return the guest's long double, as x87 bits in x0 and x1.
 constexpr std::string_view X87Results[] = {"strtold_nid_postfix", "wcstold_nid_postfix"};
 
-// sub rsp, 0xb8; store the argument registers; mov rdi, rsp; syscall; load the result registers;
-// add rsp, 0xb8; ret
-constexpr std::uint8_t Trampoline[] = {
-    0x48, 0x81, 0xec, 0xb8, 0x00, 0x00, 0x00,
-    0x48, 0x89, 0x3c, 0x24,
-    0x48, 0x89, 0x74, 0x24, 0x08,
-    0x48, 0x89, 0x54, 0x24, 0x10,
-    0x48, 0x89, 0x4c, 0x24, 0x18,
-    0x4c, 0x89, 0x44, 0x24, 0x20,
-    0x4c, 0x89, 0x4c, 0x24, 0x28,
-    0xf3, 0x0f, 0x7f, 0x44, 0x24, 0x30,
-    0xf3, 0x0f, 0x7f, 0x4c, 0x24, 0x40,
-    0xf3, 0x0f, 0x7f, 0x54, 0x24, 0x50,
-    0xf3, 0x0f, 0x7f, 0x5c, 0x24, 0x60,
-    0xf3, 0x0f, 0x7f, 0x64, 0x24, 0x70,
-    0xf3, 0x0f, 0x7f, 0xac, 0x24, 0x80, 0x00, 0x00, 0x00,
-    0xf3, 0x0f, 0x7f, 0xb4, 0x24, 0x90, 0x00, 0x00, 0x00,
-    0xf3, 0x0f, 0x7f, 0xbc, 0x24, 0xa0, 0x00, 0x00, 0x00,
-    0x48, 0x89, 0xe7,
-    0x0f, 0x05,
-    // Where the x87 variant, which loads st(0) instead, differs.
-    0x48, 0x8b, 0x04, 0x24,
-    0x48, 0x8b, 0x54, 0x24, 0x08,
-    0xf3, 0x0f, 0x6f, 0x44, 0x24, 0x30,
-    0xf3, 0x0f, 0x6f, 0x4c, 0x24, 0x40,
-    0x48, 0x81, 0xc4, 0xb8, 0x00, 0x00, 0x00,
-    0xc3,
-};
+template <std::size_t... Sizes>
+constexpr std::array<std::uint8_t, (Sizes + ...)> Join(const std::array<std::uint8_t, Sizes>&... parts) {
+    std::array<std::uint8_t, (Sizes + ...)> joined {};
+    std::size_t at = 0;
+    ((std::copy(parts.begin(), parts.end(), joined.begin() + at), at += Sizes), ...);
+    return joined;
+}
 
-constexpr std::size_t TrampolineCall = 98;
+using Bytes4 = std::array<std::uint8_t, 4>;
+using Bytes5 = std::array<std::uint8_t, 5>;
+using Bytes6 = std::array<std::uint8_t, 6>;
+using Bytes7 = std::array<std::uint8_t, 7>;
+using Bytes9 = std::array<std::uint8_t, 9>;
 
-// fld tword [rsp]; add rsp, 0xb8; ret
-constexpr std::uint8_t X87Epilogue[] = {0xdb, 0x2c, 0x24, 0x48, 0x81, 0xc4, 0xb8, 0x00, 0x00, 0x00, 0xc3};
+constexpr Bytes7 SubRspBlock {0x48, 0x81, 0xec, 0xb8, 0x00, 0x00, 0x00};
+constexpr Bytes7 AddRspBlock {0x48, 0x81, 0xc4, 0xb8, 0x00, 0x00, 0x00};
+constexpr Bytes4 StoreRdi {0x48, 0x89, 0x3c, 0x24};
+constexpr Bytes5 StoreRsi {0x48, 0x89, 0x74, 0x24, 0x08};
+constexpr Bytes5 StoreRdx {0x48, 0x89, 0x54, 0x24, 0x10};
+constexpr Bytes5 StoreRcx {0x48, 0x89, 0x4c, 0x24, 0x18};
+constexpr Bytes5 StoreR8 {0x4c, 0x89, 0x44, 0x24, 0x20};
+constexpr Bytes5 StoreR9 {0x4c, 0x89, 0x4c, 0x24, 0x28};
+constexpr Bytes6 StoreXmm0 {0xf3, 0x0f, 0x7f, 0x44, 0x24, 0x30};
+constexpr Bytes6 StoreXmm1 {0xf3, 0x0f, 0x7f, 0x4c, 0x24, 0x40};
+constexpr Bytes6 StoreXmm2 {0xf3, 0x0f, 0x7f, 0x54, 0x24, 0x50};
+constexpr Bytes6 StoreXmm3 {0xf3, 0x0f, 0x7f, 0x5c, 0x24, 0x60};
+constexpr Bytes6 StoreXmm4 {0xf3, 0x0f, 0x7f, 0x64, 0x24, 0x70};
+constexpr Bytes9 StoreXmm5 {0xf3, 0x0f, 0x7f, 0xac, 0x24, 0x80, 0x00, 0x00, 0x00};
+constexpr Bytes9 StoreXmm6 {0xf3, 0x0f, 0x7f, 0xb4, 0x24, 0x90, 0x00, 0x00, 0x00};
+constexpr Bytes9 StoreXmm7 {0xf3, 0x0f, 0x7f, 0xbc, 0x24, 0xa0, 0x00, 0x00, 0x00};
+constexpr std::array<std::uint8_t, 3> MoveRspToRdi {0x48, 0x89, 0xe7};
+constexpr std::array<std::uint8_t, 2> Syscall {0x0f, 0x05};
+constexpr Bytes4 LoadRax {0x48, 0x8b, 0x04, 0x24};
+constexpr Bytes5 LoadRdx {0x48, 0x8b, 0x54, 0x24, 0x08};
+constexpr Bytes6 LoadXmm0 {0xf3, 0x0f, 0x6f, 0x44, 0x24, 0x30};
+constexpr Bytes6 LoadXmm1 {0xf3, 0x0f, 0x6f, 0x4c, 0x24, 0x40};
+constexpr std::array<std::uint8_t, 3> LoadSt0 {0xdb, 0x2c, 0x24};
+constexpr std::array<std::uint8_t, 1> Return {0xc3};
+
+constexpr auto TrampolineCall = Join(SubRspBlock, StoreRdi, StoreRsi, StoreRdx, StoreRcx, StoreR8, StoreR9, StoreXmm0, StoreXmm1,
+                                     StoreXmm2, StoreXmm3, StoreXmm4, StoreXmm5, StoreXmm6, StoreXmm7, MoveRspToRdi, Syscall);
+constexpr auto TrampolineReturn = Join(LoadRax, LoadRdx, LoadXmm0, LoadXmm1, AddRspBlock, Return);
+constexpr auto X87TrampolineReturn = Join(LoadSt0, AddRspBlock, Return);
+
+constexpr std::uint8_t MoveToEax = 0xb8;
+constexpr std::uint8_t JumpRelative = 0xe9;
 
 }
 
@@ -232,15 +220,15 @@ Bridge::Bridge(std::filesystem::path libraries) : directory(std::move(libraries)
     void* memory = mmap(nullptr, StubSize(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (memory == MAP_FAILED) throw std::runtime_error("cannot allocate the import stubs");
     stubs = static_cast<std::uint8_t*>(memory);
-    static_assert(Trampoline[TrampolineCall - 2] == 0x0f && Trampoline[TrampolineCall - 1] == 0x05);
-    static_assert(TrampolineOffset + sizeof(Trampoline) <= X87TrampolineOffset);
-    static_assert(X87TrampolineOffset + TrampolineCall + sizeof(X87Epilogue) <= FirstStubOffset);
+    static_assert(TrampolineOffset + TrampolineCall.size() + TrampolineReturn.size() <= X87TrampolineOffset);
+    static_assert(X87TrampolineOffset + TrampolineCall.size() + X87TrampolineReturn.size() <= FirstStubOffset);
     std::memset(stubs, 0xcc, FirstStubOffset);
     stubs[0] = 0x0f;
     stubs[1] = 0x3e;
-    std::memcpy(stubs + TrampolineOffset, Trampoline, sizeof(Trampoline));
-    std::memcpy(stubs + X87TrampolineOffset, Trampoline, TrampolineCall);
-    std::memcpy(stubs + X87TrampolineOffset + TrampolineCall, X87Epilogue, sizeof(X87Epilogue));
+    std::memcpy(stubs + TrampolineOffset, TrampolineCall.data(), TrampolineCall.size());
+    std::memcpy(stubs + TrampolineOffset + TrampolineCall.size(), TrampolineReturn.data(), TrampolineReturn.size());
+    std::memcpy(stubs + X87TrampolineOffset, TrampolineCall.data(), TrampolineCall.size());
+    std::memcpy(stubs + X87TrampolineOffset + TrampolineCall.size(), X87TrampolineReturn.data(), X87TrampolineReturn.size());
 }
 
 Bridge::~Bridge() {
@@ -311,11 +299,10 @@ std::uint64_t Bridge::AddStub(void* address, const std::string& name, Variadic v
     if (FirstStubOffset + (functions.size() + 1) * StubBytes > StubSize()) throw std::runtime_error("too many imported functions");
     const auto number = static_cast<std::uint32_t>(FirstStub + functions.size());
     std::uint8_t* stub = stubs + FirstStubOffset + functions.size() * StubBytes;
-    // mov eax, number; jmp trampoline
     const auto target = static_cast<std::int32_t>(x87Result ? X87TrampolineOffset : TrampolineOffset);
     const auto jump = target - static_cast<std::int32_t>(stub + 10 - stubs);
-    const std::uint8_t code[] = {0xb8, static_cast<std::uint8_t>(number), static_cast<std::uint8_t>(number >> 8), static_cast<std::uint8_t>(number >> 16),
-        static_cast<std::uint8_t>(number >> 24), 0xe9, static_cast<std::uint8_t>(jump), static_cast<std::uint8_t>(jump >> 8),
+    const std::uint8_t code[] = {MoveToEax, static_cast<std::uint8_t>(number), static_cast<std::uint8_t>(number >> 8), static_cast<std::uint8_t>(number >> 16),
+        static_cast<std::uint8_t>(number >> 24), JumpRelative, static_cast<std::uint8_t>(jump), static_cast<std::uint8_t>(jump >> 8),
         static_cast<std::uint8_t>(jump >> 16), static_cast<std::uint8_t>(jump >> 24)};
     std::memset(stub, 0xcc, StubBytes);
     std::memcpy(stub, code, sizeof(code));
@@ -365,7 +352,6 @@ std::uint64_t Bridge::Resolve(const std::string& name, bool weak) {
 }
 
 std::uint64_t Bridge::Call(FEXCore::Core::CPUState& state, std::uint64_t number, std::uint64_t block) {
-    // FEXCore leaves the RIP at the syscall, a two-byte instruction.
     const std::uint64_t rip = state.rip;
     state.rip = rip + 2;
     if (number < FirstStub || number - FirstStub >= functions.size()) {
@@ -380,8 +366,6 @@ std::uint64_t Bridge::Call(FEXCore::Core::CPUState& state, std::uint64_t number,
     }
     auto* registers = reinterpret_cast<std::uint64_t*>(block);
     auto* guestStack = reinterpret_cast<std::uint64_t*>(block + BlockSize + 8);
-    // The stack argument slots are read whether the function has them or not; past the end of a guest
-    // stack the next page may not be mapped, and then the slots that would lie there are zero.
     std::uint64_t slots[2 + StackArgumentSlots] {};
     std::memcpy(slots, guestStack, ReadableBytes(guestStack, sizeof(slots)));
     const std::uint64_t* stack = slots;
@@ -398,11 +382,7 @@ std::uint64_t Bridge::Call(FEXCore::Core::CPUState& state, std::uint64_t number,
         StackArgumentSlots,
     };
     std::memcpy(arguments.vector, reinterpret_cast<const void*>(block + BlockVectors), sizeof(arguments.vector));
-    // The guest's variadic arguments, for a function that takes them as a guest list: the integer ones
-    // after the fixed ones in the block, the vector ones from xmm0, then the caller's stack arguments.
     VaList list {static_cast<std::uint32_t>(8 * function.fixed), 48, guestStack, registers};
-    // For a function that takes them as integers: the integer registers after the fixed ones, then the
-    // caller's stack arguments, each in a stack slot.
     std::uint64_t variadicSlots[6 + StackArgumentSlots];
     switch (function.variadic) {
     case Variadic::None: break;
