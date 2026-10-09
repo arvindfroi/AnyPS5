@@ -8,22 +8,26 @@ struct Error { int code; };
 static int cleanups = 0;
 struct Guard { ~Guard() { ++cleanups; } };
 
-__attribute__((noinline)) int thrower(int value) {
+int thrower(int value) {
     Guard guard;
     if (value > 0) throw Error{value * 2};
     return 0;
 }
 
-__attribute__((noinline)) int run(int value) {
+int (*volatile throwerPointer)(int) = thrower;
+
+int run(int value) {
     try {
-        thrower(value);
+        throwerPointer(value);
     } catch (const Error& error) {
         return error.code + cleanups;
     }
     return 1;
 }
 
+int (*volatile runPointer)(int) = run;
+
 extern "C" [[noreturn]] void _start(void*) {
     puts("guest C++ exception test");
-    exit(run(21));
+    exit(runPointer(21));
 }
