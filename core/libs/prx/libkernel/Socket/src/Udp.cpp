@@ -293,6 +293,9 @@ int NativePair(int type, NativeSocket (&pair)[2]) {
 }
 #else
 int NativePair(int type, NativeSocket (&pair)[2]) {
+#ifdef __APPLE__
+    if (type == 5) throw std::runtime_error("socketpair: SOCK_SEQPACKET is not supported on macOS");
+#endif
     const int nativeType = type == 1 ? SOCK_STREAM : type == 2 ? SOCK_DGRAM : SOCK_SEQPACKET;
     int native[2];
     if (::socketpair(AF_UNIX, nativeType, 0, native)) return PairError();

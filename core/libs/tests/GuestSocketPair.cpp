@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 
 struct PollDescriptor {
     int descriptor;
@@ -128,7 +129,15 @@ int main() {
     Require(Exchange(pair[1], pair[0], "back"));
     Require(close_nid_postfix(pair[0]) == 0 && close_nid_postfix(pair[1]) == 0);
 
-#ifndef _WIN32
+#ifdef __APPLE__
+    bool sequencedPacketThrows = false;
+    try {
+        socketpair_nid_postfix(Unix, SequencedPacket, 0, pair);
+    } catch (const std::runtime_error&) {
+        sequencedPacketThrows = true;
+    }
+    Require(sequencedPacketThrows);
+#elif !defined(_WIN32)
     Require(socketpair_nid_postfix(Unix, SequencedPacket, 0, pair) == 0);
     Require(send_nid_postfix(pair[0], "a", 1, 0) == 1);
     Require(send_nid_postfix(pair[0], "bb", 2, 0) == 2);
