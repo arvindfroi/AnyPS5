@@ -191,11 +191,23 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
         const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(image));
         if (!header || header->magic != MH_MAGIC_64 || (header->flags & MH_DYLIB_IN_CACHE) != 0) continue;
         const auto slide = static_cast<std::uint64_t>(_dyld_get_image_vmaddr_slide(image));
+        bool relinked = false;
+        {
+            const auto* scan = reinterpret_cast<const load_command*>(header + 1);
+            for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+                relinked = relinked || (scan->cmd == LC_SEGMENT_64 && std::strncmp(reinterpret_cast<const segment_command_64*>(scan)->segname, "__APS5DATA", 16) == 0);
+                scan = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(scan) + scan->cmdsize);
+            }
+        }
         const auto* command = reinterpret_cast<const load_command*>(header + 1);
         for (std::uint32_t index = 0; index < header->ncmds; ++index) {
             if (command->cmd == LC_SEGMENT_64) {
                 const auto& segment = *reinterpret_cast<const segment_command_64*>(command);
-                if (segment.vmsize != 0 && segment.initprot != VM_PROT_NONE) {
+                // A relinked guest keeps its own memory in the __ELF segments; the header, the metadata and
+                // the link information around them are not guest memory, and a range the guest rounds to its
+                // 16 KiB pages must not spill into them.
+                const bool guestMemory = !relinked || std::strncmp(segment.segname, "__ELF", 5) == 0;
+                if (guestMemory && segment.vmsize != 0 && segment.initprot != VM_PROT_NONE) {
                     const auto start = (slide + segment.vmaddr) & ~(pageSize - 1);
                     const auto end = (slide + segment.vmaddr + segment.vmsize + pageSize - 1) & ~(pageSize - 1);
                     for (auto page = start; page < end; page += pageSize) {
@@ -337,6 +349,32 @@ bool GuestAllocationsOverlaps_nid_postfix(void*, const void* pointer, std::size_
         if (base + range->bytes > address) return true;
     }
     return false;
+}
+
+// The guest rounds the ranges it protects to its 16 KiB pages. A Mach-O image is loaded at a multiple
+// of the host page size only (4 KiB under Rosetta), so the rounded range can reach into the gap
+// between two ELF segments, which no host page backs and the registry does not know. Such an edge,
+// smaller than a guest page, is not part of the guest's request.
+void GuestAllocationsTrimToRegistered_nid_postfix(void*, const void** pointer, std::size_t* bytes) {
+#ifdef __APPLE__
+    constexpr std::uint64_t guestPage = 0x4000;
+    auto start = reinterpret_cast<std::uintptr_t>(*pointer);
+    auto end = start + *bytes;
+    const auto& ranges = registry().ranges;
+    const auto following = ranges.upper_bound(start);
+    const bool startCovered = following != ranges.begin() && std::prev(following)->first + std::prev(following)->second->bytes > start;
+    if (!startCovered && following != ranges.end() && following->first < end && following->first - start < guestPage) start = following->first;
+    const auto beyond = ranges.lower_bound(end);
+    if (beyond != ranges.begin()) {
+        const auto finish = std::prev(beyond)->first + std::prev(beyond)->second->bytes;
+        if (finish < end && finish > start && end - finish < guestPage) end = finish;
+    }
+    *pointer = reinterpret_cast<const void*>(start);
+    *bytes = end - start;
+#else
+    static_cast<void>(pointer);
+    static_cast<void>(bytes);
+#endif
 }
 
 bool GuestAllocationsCovers_nid_postfix(void*, const void* pointer, std::size_t bytes) {

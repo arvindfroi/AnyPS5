@@ -761,8 +761,8 @@ int DoMprotect(const void* addr, size_t len, int prot) {
     if (address == 0 || len == 0 || len > limit - address || address + len > limit - pageMask) throw std::invalid_argument("Invalid guest memory protection range");
     const auto first = address & ~pageMask;
     const auto end = (address + len + pageMask) & ~pageMask;
-    const auto bytes = static_cast<std::size_t>(end - first);
-    const auto* pointer = reinterpret_cast<const void*>(first);
+    auto bytes = static_cast<std::size_t>(end - first);
+    const void* pointer = reinterpret_cast<const void*>(first);
     const auto nativeProtection = LinuxProtFromSce(prot);
     GuestAllocations::Mutation mutation;
 #ifdef _WIN32
@@ -774,6 +774,7 @@ int DoMprotect(const void* addr, size_t len, int prot) {
     }
 #else
     mutation.RegisterMainImage();
+    mutation.TrimToRegistered(pointer, bytes);
 #endif
     mutation.Protect(pointer, bytes, (prot & 3) != 0, (prot & 2) != 0, [&] {
         if (mprotect(const_cast<void*>(pointer), bytes, nativeProtection) != 0) throw std::system_error(errno, std::generic_category(), "mprotect failed");

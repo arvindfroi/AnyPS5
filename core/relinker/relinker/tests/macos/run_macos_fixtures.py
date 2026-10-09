@@ -14,11 +14,12 @@ sys.path.insert(0, str(HERE.parent))
 
 import guesttools
 from import_fixture import fixture as import_fixture
+from mprotect_fixture import fixture as mprotect_fixture
 from tls_fixture import fixture as tls_fixture
 from test_linux_entry_argv import argv_fixture
 
 
-def relink_and_run(relinker, libraries, directory, expected, arguments=(), modules=False, relink_options=()):
+def relink_and_run(relinker, libraries, directory, expected, arguments=(), modules=False, relink_options=(), repeat=1):
     directory = pathlib.Path(directory)
     output = directory / "eboot"
     source = directory / "eboot.elf"
@@ -37,8 +38,11 @@ def relink_and_run(relinker, libraries, directory, expected, arguments=(), modul
     output.chmod(0o755)
     shutil.rmtree(directory / "libs", ignore_errors=True)
     shutil.copytree(libraries, directory / "libs", ignore=shutil.ignore_patterns("unpatched", "implib"))
-    executed = subprocess.run([str(output), *arguments], capture_output=True, text=True, timeout=120, cwd=directory)
-    return None if executed.returncode == expected else f"exit {executed.returncode}, expected {expected}: {executed.stderr.strip()[-300:]}"
+    for _ in range(repeat):
+        executed = subprocess.run([str(output), *arguments], capture_output=True, text=True, timeout=120, cwd=directory)
+        if executed.returncode != expected:
+            return f"exit {executed.returncode}, expected {expected}: {executed.stderr.strip()[-300:]}"
+    return None
 
 
 def compiled_exception(directory):
@@ -203,6 +207,9 @@ def stale_libraries(libraries):
     return stale
 
 
+REPEATS = {"mprotect-slide": 16}
+
+
 def main():
     if sys.platform != "darwin":
         print("macOS fixtures skipped: not macOS")
@@ -215,6 +222,7 @@ def main():
         ("argv", lambda d: (d / "eboot.elf").write_bytes(argv_fixture()), -signal.SIGTRAP, ["Z"], False),
         ("import", lambda d: (d / "eboot.elf").write_bytes(import_fixture()), 0, [], False),
         ("tls", lambda d: (d / "eboot.elf").write_bytes(tls_fixture()), 136, [], False),
+        ("mprotect-slide", lambda d: (d / "eboot.elf").write_bytes(mprotect_fixture()), 0, [], False),
     ]
     if guesttools.available():
         cases += [("exception", compiled_exception, 43, [], False),
@@ -233,7 +241,7 @@ def main():
         shutil.rmtree(directory, ignore_errors=True)
         directory.mkdir(parents=True)
         build(directory)
-        error = relink_and_run(relinker, libraries, directory, expected, arguments, modules, *relink_options)
+        error = relink_and_run(relinker, libraries, directory, expected, arguments, modules, *relink_options, repeat=REPEATS.get(name, 1))
         print(f"{'PASS' if error is None else 'FAIL'} {name}" + ("" if error is None else f": {error}"))
         failures += error is not None
     if failures:
