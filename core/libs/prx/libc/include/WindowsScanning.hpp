@@ -33,7 +33,6 @@ inline int ScanWindowsArguments_nid_no_patch(const char* format, const void* sou
             return EOF;
         }
 #if !defined(__x86_64__)
-        // The host's long double is not the guest's x87 one.
         if (length == "L" && std::strchr("aAeEfFgG", conversion)) NotImplemented_nid_no_patch("x87 long double scanning");
 #endif
         ++format;

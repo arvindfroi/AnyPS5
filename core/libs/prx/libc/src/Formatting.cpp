@@ -68,7 +68,6 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
         const char conversion = *cursor;
         if (conversion == '\0') return finish(assigned);
 #if !defined(__x86_64__)
-        // The host's long double is not the guest's x87 one.
         if (length == "L" && std::strchr("aAeEfFgG", conversion) != nullptr) NotImplemented_nid_no_patch("x87 long double scanning");
 #endif
         std::string specifier(1, conversion);

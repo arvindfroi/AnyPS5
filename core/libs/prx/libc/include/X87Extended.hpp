@@ -11,8 +11,6 @@
 #include <string>
 #include <vector>
 
-// The guest's long double: x87 extended precision, a 64-bit significand with an explicit integer
-// bit, and a sign bit over a 15-bit exponent biased by 16383, stored in 16 bytes.
 struct alignas(16) X87Extended {
     std::uint64_t significand;
     std::uint16_t signExponent;
@@ -23,7 +21,6 @@ static_assert(sizeof(X87Extended) == 16);
 
 namespace LibcDetail {
 
-// Exact, since every double is an x87 value.
 inline X87Extended X87FromDouble(double value) {
     std::uint64_t bits;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -44,7 +41,6 @@ inline X87Extended X87FromDouble(double value) {
 
 }
 
-// What the guest's long double is on this host: the host's own on x86-64, the bits elsewhere.
 #if defined(__x86_64__)
 using GuestLongDouble = long double;
 inline GuestLongDouble GuestLongDoubleFromDouble(double value) { return value; }
@@ -86,7 +82,6 @@ public:
         return whole < words.size() && index % 32 != 0 && (words[whole] & ((1u << (index % 32)) - 1)) != 0;
     }
 
-    // The 64 bits from bit low up.
     std::uint64_t Bits64(std::size_t low) const {
         std::uint64_t value = 0;
         for (std::size_t i = 64; i-- > 0;) value = (value << 1) | (Bit(low + i) ? 1u : 0u);
@@ -150,7 +145,6 @@ public:
         return 0;
     }
 
-    // Requires *this >= other.
     void Subtract(const X87BigUnsigned& other) {
         std::uint64_t borrow = 0;
         for (std::size_t i = 0; i < words.size(); ++i) {
@@ -176,8 +170,6 @@ public:
     }
 };
 
-// Rounds to nearest, ties to even, (n + a fraction below one when sticky) * 2^exponent, with n not
-// zero. Sets errno to ERANGE when the result overflows, or is subnormal or zero and inexact.
 inline X87Extended RoundX87(const X87BigUnsigned& n, long long exponent, bool sticky) {
     constexpr long long LowestUnit = -16445;
     const long long length = static_cast<long long>(n.BitLength());
@@ -221,7 +213,6 @@ inline int X87HexValue(char character) {
     return -1;
 }
 
-// Reads an optional exponent, a marker then an optionally signed decimal number, into exponent.
 inline const char* X87Exponent(const char* cursor, char marker, long long& exponent) {
     if ((*cursor | 0x20) != marker) return cursor;
     const char* digits = cursor + 1;
@@ -234,7 +225,6 @@ inline const char* X87Exponent(const char* cursor, char marker, long long& expon
     return digits;
 }
 
-// The guest's strtold in the "C" locale, for a host whose long double is not the guest's.
 inline X87Extended ParseX87(const char* text, char** end) {
     const char* cursor = text;
     while (*cursor == ' ' || (*cursor >= '\t' && *cursor <= '\r')) ++cursor;
@@ -282,8 +272,6 @@ inline X87Extended ParseX87(const char* text, char** end) {
         cursor = X87Exponent(cursor, 'p', exponent);
         return finish(value.IsZero() ? X87Extended{0, 0} : RoundX87(value, exponent, sticky), cursor);
     }
-    // A rounding boundary between two x87 values has at most about 11500 significant digits,
-    // so digits past these only matter as a nonzero tail.
     constexpr std::size_t MaxDigits = 16384;
     std::string digits;
     long long exponent = 0;
@@ -327,7 +315,6 @@ inline X87Extended ParseX87(const char* text, char** end) {
         value.ShiftLeft(static_cast<std::size_t>(exponent));
         return finish(RoundX87(value, 0, false), cursor);
     }
-    // value / 10^-exponent = value / 5^-exponent * 2^exponent, divided to a 68 or 69 bit quotient.
     X87BigUnsigned divisor(1);
     divisor.MultiplyPow5(-exponent);
     const long long shift = static_cast<long long>(value.BitLength()) - static_cast<long long>(divisor.BitLength()) - 68;
@@ -352,8 +339,6 @@ inline X87Extended ParseX87(const char* text, char** end) {
     return finish(RoundX87(whole, exponent + shift, !value.IsZero()), cursor);
 }
 
-// Keeps the first count digits of digits, the rest being a fraction, rounded to nearest with ties to
-// even. count may be at most zero (the value is below one) or past the digits (zeros follow).
 inline std::string X87RoundDigits(const std::string& digits, long long count) {
     if (count >= static_cast<long long>(digits.size())) return digits + std::string(static_cast<std::size_t>(count) - digits.size(), '0');
     std::string kept = count > 0 ? digits.substr(0, static_cast<std::size_t>(count)) : std::string();
@@ -371,7 +356,6 @@ inline std::string X87RoundDigits(const std::string& digits, long long count) {
     return kept.empty() ? "0" : kept;
 }
 
-// digits * 10^exponent with precision digits after the point.
 inline std::string X87Fixed(const std::string& digits, long long exponent, long long precision, bool point) {
     std::string rounded = X87RoundDigits(digits, static_cast<long long>(digits.size()) + exponent + precision);
     rounded.erase(0, std::min(rounded.find_first_not_of('0'), rounded.size() - 1));
@@ -383,7 +367,6 @@ inline std::string X87Fixed(const std::string& digits, long long exponent, long 
     return text + rounded.substr(integer);
 }
 
-// digits * 10^exponent as d.ddde+XX with precision digits after the point.
 inline std::string X87Scientific(const std::string& digits, long long exponent, long long precision, bool point, char marker) {
     std::string rounded;
     long long power = 0;
@@ -447,8 +430,6 @@ inline std::string X87Hexadecimal(std::uint64_t significand, unsigned field, lon
     return text + suffix;
 }
 
-// One printf conversion of an x87 value: spec is '%', the flags, the width and the precision as
-// they appeared in the format, without the L, and conversion is one of aAeEfFgG.
 inline std::string FormatX87(X87Extended value, const std::string& spec, char conversion) {
     bool left = false;
     bool plus = false;
@@ -478,7 +459,6 @@ inline std::string FormatX87(X87Extended value, const std::string& spec, char co
     const bool integerBit = (value.significand >> 63) != 0;
     if (field == 0x7fff) {
         if (!integerBit) NotImplemented_nid_no_patch("x87 pseudo-infinity or pseudo-NaN formatting");
-        // The host formats infinities and NaNs as it does for double.
         const double special = (value.significand << 1) == 0 ? HUGE_VAL : std::nan("");
         const std::string format = spec + conversion;
         const int size = std::snprintf(nullptr, 0, format.c_str(), negative ? -special : special);
@@ -499,7 +479,6 @@ inline std::string FormatX87(X87Extended value, const std::string& spec, char co
         prefix += body.substr(0, 2);
         body.erase(0, 2);
     } else {
-        // |value| = significand * 2^power = digits * 10^exponent exactly.
         const long long power = static_cast<long long>(field == 0 ? 1 : field) - 16383 - 63;
         X87BigUnsigned exact(value.significand);
         long long exponent = 0;

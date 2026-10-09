@@ -28,8 +28,6 @@ std::string Host(const std::string& format, double value) {
     return text;
 }
 
-// Darwin's %g keeps the zeros of a tie rounded to even (10005 with %.4g gives 1.000e+04), which C
-// requires to be removed.
 bool KeepsTrailingZeros(const std::string& spec, char conversion, const std::string& text) {
     if ((conversion | 0x20) != 'g' || spec.find('#') != std::string::npos) return false;
     const std::string mantissa = text.substr(0, text.find_first_of("eE"));
@@ -37,7 +35,6 @@ bool KeepsTrailingZeros(const std::string& spec, char conversion, const std::str
     return mantissa.find('.') != std::string::npos && last != std::string::npos && mantissa[last] == '0';
 }
 
-// Every double is an x87 value, so the x87 formatter must agree with the host's double formatter.
 void CheckAgainstHostDoubles() {
     std::mt19937_64 random(12345);
     std::vector<double> values = {0.0, -0.0, 1.0, -1.0, 0.5, 2.5, 0.125, 0.375, 1e-300, 4.9e-324, 2.2250738585072014e-308,
@@ -75,7 +72,6 @@ X87Extended Parse(const char* text, int* error = nullptr, std::size_t* used = nu
     return value;
 }
 
-// 21 significant digits identify an x87 value, and the hexadecimal form is exact.
 void CheckRoundTrips() {
     std::mt19937_64 random(54321);
     for (int i = 0; i < 1500; ++i) {
@@ -217,7 +213,6 @@ void CheckFormatting() {
 }
 
 #if defined(__x86_64__) && defined(__linux__)
-// Where the host's long double is the guest's, the x87 code must agree with the host's.
 void CheckAgainstHostLongDoubles() {
     std::mt19937_64 random(777);
     for (int i = 0; i < 500; ++i) {

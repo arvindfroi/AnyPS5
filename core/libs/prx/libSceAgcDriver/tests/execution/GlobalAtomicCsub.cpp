@@ -91,8 +91,6 @@ public:
         Require(block != nullptr, "global atomic csub: cannot allocate the guest block");
         GuestAllocations::Mutation().Add(block, BlockBytes, true, true);
 #else
-        // A whole host page, so that the block is imported in place, as the atomics need, where pages
-        // are 16 KiB.
         const auto bytes = std::max<std::size_t>(BlockBytes, static_cast<std::size_t>(getpagesize()));
         block = static_cast<std::uint8_t*>(std::aligned_alloc(bytes, bytes));
         Require(block != nullptr, "global atomic csub: cannot allocate the guest block");
