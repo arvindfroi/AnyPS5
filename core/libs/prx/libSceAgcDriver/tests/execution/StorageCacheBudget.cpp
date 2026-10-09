@@ -56,6 +56,8 @@ struct SelectedDevice {
 SelectedDevice SelectDevice() {
 #ifdef _WIN32
     void* library = SDL_LoadObject("vulkan-1.dll");
+#elif defined(__APPLE__)
+    void* library = SDL_LoadObject("libvulkan.1.dylib");
 #else
     void* library = SDL_LoadObject("libvulkan.so.1");
 #endif
